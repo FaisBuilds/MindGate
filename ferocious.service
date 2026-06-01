@@ -1,0 +1,13 @@
+[Unit]
+Description=Ferocious Website Blocker
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/mitmdump -q -s /usr/local/bin/ferocious-proxy.py
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target

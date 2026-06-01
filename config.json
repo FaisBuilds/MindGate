@@ -1,0 +1,20 @@
+{
+  "blocked_domains": [
+    "reddit.com",
+    "youtube.com",
+    "twitter.com",
+    "facebook.com",
+    "instagram.com"
+  ],
+  "blocked_keywords": [
+    "porn",
+    "nsfw",
+    "xxx",
+    "18+"
+  ],
+  "blocked_subreddits": [
+    "porn",
+    "nsfw",
+    "gonewild"
+  ]
+}
