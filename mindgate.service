@@ -1,0 +1,14 @@
+[Unit]
+Description=MindGate Website Blocker
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/mindgate.py --status
+Restart=always
+RestartSec=5
+User=root
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

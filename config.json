@@ -13,8 +13,8 @@
     "18+"
   ],
   "blocked_subreddits": [
-    "porn",
-    "nsfw",
-    "gonewild"
+    "r/gonewild",
+    "r/nsfw",
+    "r/porn"
   ]
 }

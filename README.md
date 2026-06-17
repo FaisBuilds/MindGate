@@ -1,182 +1,238 @@
-# 🛡️ Ferocious — Permanent Website Blocker
+# 🧠 MindGate — Permanent Website Blocker for Linux
 
-Ferocious is a **password-protected, system-wide website blocker** for Linux. It blocks domains, keywords, and specific subreddits across all browsers and applications. Once installed, all management actions require the administrator password.
+MindGate is a **ruthless, permanent, password-protected website blocker** for Linux. It blocks domains, keywords, and subreddits at the **network level** (iptables) and **DNS level** (systemd-resolved), making it nearly impossible to bypass. Like Cold Turkey, but for Linux.
+
+Once installed, all management is locked behind a password. **No UI tricks. No timer workarounds. Just pure blocking power.**
 
 ---
 
-## 🔥 Features
+## 🔥 Why MindGate is Powerful
 
-| Feature                  | Description                                                 |
-| ------------------------ | ----------------------------------------------------------- |
-| 🌐 System-wide Blocking  | Works across all browsers and applications                  |
-| 🔒 Password Protection   | Prevents unauthorized changes or removal                    |
-| 🚫 Domain Blocking       | Block entire websites (e.g., `reddit.com`)                  |
-| 🔍 Keyword Blocking      | Block URLs containing specific keywords                     |
-| 📌 Subreddit Blocking    | Block individual subreddits while keeping Reddit accessible |
-| 🛡️ Immutable Protection | Critical files locked using `chattr +i`                     |
-| 🔄 Auto-Restart          | Automatically respawns through systemd if stopped           |
-| 🧹 Clean Uninstall       | Removes all Ferocious files and services                    |
+| Feature | Why It Matters |
+|---------|----------------|
+| **Network-Level Blocking** | Uses `iptables` to drop packets—works even if you change DNS |
+| **DNS-Level Blocking** | Blocks at `systemd-resolved` layer—can't bypass with VPN easily |
+| **Immutable Config** | Files locked with `chattr +i`—can't edit even as sudo |
+| **Auto-Recovery** | systemd service auto-respawns if killed |
+| **Password Protected** | All critical actions require password |
+| **System-Wide** | Works across ALL browsers and applications |
+| **No Exceptions** | Cold Turkey-level stubbornness—blocks until you decide otherwise |
 
 ---
 
 ## 📦 Installation
 
-### Clone or Download
+### Clone the repository
 
 ```bash
 git clone <repository-url>
-cd ferocious
+cd MindGate
 ```
 
-### Install Ferocious
+### Run the installer
 
 ```bash
+sudo chmod +x install.sh
 sudo ./install.sh
 ```
 
-During installation you will be prompted to create an administrator password.
+During installation, you'll set an **administrator password**. This password is required for all sensitive operations.
 
-After installation, Ferocious starts automatically and launches at system boot.
+After installation:
+- MindGate starts automatically
+- Launches at system boot
+- Blocks are active immediately
 
 ---
 
 # ⚡ Commands
 
+All commands start with `mindgate-` and require administrator password for sensitive operations.
+
 ## Check Status
 
 ```bash
-ferocious-status
+mindgate-status
 ```
 
-Displays whether Ferocious is currently running and active.
+Shows whether MindGate is running and displays active rules.
+
+**Output:**
+```
+🧠 MindGate is ACTIVE
+   Blocked domains: 5
+   Blocked keywords: 4
+   Service: running
+   iptables rules: active
+```
 
 ---
 
-## Add a Block Rule
+## Add a Single Block Rule
 
 ```bash
-ferocious-add
+mindgate-add
 ```
 
-Example:
+Prompts you to enter a domain, keyword, or subreddit.
 
+**Example:**
 ```text
 Enter domain, keyword, or subreddit to block:
 reddit.com
 
-✅ Domain 'reddit.com' added.
+✅ Domain 'reddit.com' added to blocklist.
 ```
 
-Supported formats:
-
-```text
-reddit.com
-porn
-r/gonewild
+**Supported Formats:**
+```
+reddit.com          # Domain
+porn                # Keyword (blocks any URL containing 'porn')
+r/gonewild          # Subreddit (blocks reddit.com/r/gonewild)
 ```
 
 ---
 
-## Import a Blocklist
+## Import a Blocklist File
 
 ```bash
-ferocious-import
+mindgate-import
 ```
 
-Opens a file picker and imports domains, keywords, and subreddit rules from a text file.
+Opens a file picker to import a plain-text blocklist. One entry per line.
 
-Example blocklist:
-
-```text
+**Example blocklist.txt:**
+```
+# Domains
 reddit.com
 facebook.com
+twitter.com
+
+# Keywords
 porn
+nsfw
+gambling
+
+# Subreddits
 r/gonewild
+r/nsfw
+```
+
+**Result:**
+```
+✅ Import complete!
+   Domains added: 3
+   Keywords added: 3
+   Subreddits added: 2
 ```
 
 ---
 
-## Edit Blocklist
+## View Current Blocklist
 
 ```bash
-ferocious-edit
+mindgate-list
 ```
 
-Opens the blocklist editor.
+Displays all active blocking rules.
 
-Administrator password required.
+**Output:**
+```
+🧠 MindGate Blocklist:
+
+Domains (5):
+  - reddit.com
+  - facebook.com
+  - youtube.com
+  - twitter.com
+  - instagram.com
+
+Keywords (4):
+  - porn
+  - nsfw
+  - xxx
+  - 18+
+
+Subreddits (3):
+  - r/gonewild
+  - r/nsfw
+  - r/porn
+```
 
 ---
 
-## Start Ferocious
+## Edit the Blocklist
 
 ```bash
-ferocious-start
+mindgate-edit
 ```
 
-Starts the blocking service.
+Opens the blocklist in your text editor (nano by default). Requires password.
+
+**Note:** The config file is locked after editing.
 
 ---
 
-## Stop Ferocious
+## Stop MindGate (Temporarily)
 
 ```bash
-ferocious-stop
+mindgate-stop
 ```
 
-Temporarily stops the service.
+**⚠️ Requires password.** Temporarily disables blocking. Useful for debugging or maintenance.
 
-Administrator password required.
+Blocking resumes when you run:
+```bash
+mindgate-start
+```
 
 ---
 
-## Restart Ferocious
+## Start MindGate
 
 ```bash
-ferocious-restart
+mindgate-start
 ```
 
-Reloads all rules and restarts the service.
-
-Administrator password required.
+Starts the blocking service. No password needed.
 
 ---
 
-## View Current Rules
+## Restart MindGate
 
 ```bash
-ferocious-list
+mindgate-restart
 ```
 
-Displays all active domains, keywords, and subreddit rules.
+Reloads all rules and restarts the service. Requires password.
 
 ---
 
-## Change Password
+## Change Administrator Password
 
 ```bash
-ferocious-password
+mindgate-password
 ```
 
-Updates the administrator password.
+Changes your administrator password. Requires the current password.
 
 ---
 
-## Uninstall Ferocious
+## Uninstall MindGate
 
 ```bash
-ferocious-uninstall
+mindgate-uninstall
 ```
 
-Completely removes:
+**⚠️ Requires password.** Completely removes MindGate and all its configurations.
 
-* Systemd service
-* Block rules
-* Configuration files
-* Password database
-* Executables
-
-Administrator password required.
+**What gets removed:**
+- All blocking rules
+- Config files and password database
+- systemd service
+- iptables and DNS rules
+- All MindGate executables
+- Bash aliases from ~/.bashrc
 
 ---
 
@@ -184,70 +240,74 @@ Administrator password required.
 
 ## Domain Blocking
 
-Blocks an entire website:
+Blocks entire websites by blocking traffic to their IP addresses.
 
-```text
-reddit.com
-twitter.com
-facebook.com
 ```
+reddit.com
+facebook.com
+twitter.com
+```
+
+**How it works:**
+1. Domain is resolved to IP
+2. iptables rule drops all packets to that IP
+3. Cannot be bypassed with DNS changes
 
 ---
 
 ## Keyword Blocking
 
-Blocks URLs containing specific words:
+Blocks URLs containing specific keywords.
 
-```text
+```
 porn
 nsfw
 gambling
 ```
 
-Examples:
-
-```text
+**Examples blocked:**
+```
 https://example.com/porn
 https://site.com/nsfw-content
+https://gambling-site.com/
 ```
 
 ---
 
 ## Subreddit Blocking
 
-Blocks specific subreddits while keeping Reddit accessible:
+Blocks specific subreddits while keeping Reddit accessible (optional).
 
-```text
+```
 r/gonewild
 r/nsfw
 r/porn
 ```
 
-Example:
-
-✅ Allowed
-
-```text
+**Allowed:**
+```
 reddit.com/r/linux
+reddit.com/r/python
 ```
 
-❌ Blocked
-
-```text
+**Blocked:**
+```
 reddit.com/r/gonewild
+reddit.com/r/nsfw
 ```
 
 ---
 
 # 🔒 Security Model
 
-Ferocious is designed to resist casual bypass attempts:
+MindGate is designed to be **impossible to bypass** without the password:
 
-* Password required for all management actions
-* Protected systemd service
-* Immutable configuration files
-* Automatic service recovery
-* System-wide blocking independent of browser extensions
+- ✅ **Network-level blocking** — Can't bypass with DNS or proxy
+- ✅ **Immutable files** — Config locked with `chattr +i` (kernel-level)
+- ✅ **Password protection** — Required for all management
+- ✅ **Auto-recovery** — Service automatically respawns if killed
+- ✅ **Sudo restrictions** — sudoers rules prevent direct file modification
+- ✅ **Persistent** — Survives reboots
 
 ---
 
@@ -255,3 +315,6 @@ Ferocious is designed to resist casual bypass attempts:
 
 MIT License
 
+---
+
+**Made with obsession for focus.**

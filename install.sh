@@ -1,64 +1,62 @@
 #!/bin/bash
-# Ferocious — One-Command Installer
+# MindGate — One-Command Installer
 # Run: chmod +x install.sh && sudo ./install.sh
 
 set -e  # Stop on error
 
-echo "🛡️  Ferocious Installer"
-echo "========================"
+echo "🧠 MindGate Installer"
+echo "======================================="
+
+# Check if running as root
+if [[ $EUID -ne 0 ]]; then
+   echo "❌ This script must be run as root (use sudo)"
+   exit 1
+fi
 
 # 1. Install dependencies
-echo "📦 Installing mitmproxy..."
+echo "📦 Installing dependencies..."
 apt update -qq
-apt install -y mitmproxy python3 python3-pip
+apt install -y python3 python3-pip iptables
 
 # 2. Copy files to system
-echo "📂 Installing Ferocious files..."
-cp ferocious.py /usr/local/bin/
-cp ferocious-proxy.py /usr/local/bin/
-chmod +x /usr/local/bin/ferocious.py
-chmod +x /usr/local/bin/ferocious-proxy.py
+echo "📂 Installing MindGate files..."
+cp mindgate.py /usr/local/bin/
+chmod +x /usr/local/bin/mindgate.py
 
 # 3. Run Python setup (sets password, creates config)
-echo "🔐 Setting up Ferocious..."
-python3 /usr/local/bin/ferocious.py --setup
+echo "🔐 Setting up MindGate..."
+python3 /usr/local/bin/mindgate.py --setup
 
 # 4. Install systemd service
-echo "⚙️ Installing systemd service..."
-cp ferocious.service /etc/systemd/system/
+echo "⚙️  Installing systemd service..."
+cp mindgate.service /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable ferocious
-systemctl start ferocious
+systemctl enable mindgate
+systemctl start mindgate
 
-# 5. Configure system proxy
-echo "🌐 Configuring system proxy..."
-gsettings set org.gnome.system.proxy mode 'manual'
-gsettings set org.gnome.system.proxy.http host '127.0.0.1'
-gsettings set org.gnome.system.proxy.http port 8080
-gsettings set org.gnome.system.proxy.https host '127.0.0.1'
-gsettings set org.gnome.system.proxy.https port 8080
-gsettings set org.gnome.system.proxy lock true 2>/dev/null || echo "  (proxy lock not supported on this system)"
+# 5. Lock files (make immutable)
+echo "🔒 Locking MindGate files..."
+chattr +i /etc/mindgate/config.json 2>/dev/null || echo "  (skipping lock on config)"
+chattr +i /etc/mindgate/password.hash 2>/dev/null || echo "  (skipping lock on password)"
 
-# 6. Lock files (make immutable)
-echo "🔒 Locking Ferocious files..."
-chattr +i /etc/ferocious/config.json 2>/dev/null || echo "  (skipping lock on config)"
-chattr +i /etc/ferocious/password.hash 2>/dev/null || echo "  (skipping lock on password)"
-
-# 7. Add bash aliases for current user
-echo "🐚 Adding Ferocious commands to ~/.bashrc..."
+# 6. Add bash aliases for current user
+echo "🐚 Adding MindGate commands to ~/.bashrc..."
 ALIAS_LINES=(
-    "# Ferocious commands"
-    "alias ferocious-status='sudo python3 /usr/local/bin/ferocious.py --status'"
-    "alias ferocious-uninstall='sudo python3 /usr/local/bin/ferocious.py --uninstall'"
-    "alias ferocious-edit='sudo python3 /usr/local/bin/ferocious.py --edit'"
-    "alias ferocious-stop='sudo python3 /usr/local/bin/ferocious.py --stop'"
-    "alias ferocious-start='sudo python3 /usr/local/bin/ferocious.py --start'"
-    "alias ferocious-add='sudo python3 /usr/local/bin/ferocious.py --add'"
-    "alias ferocious-import='sudo python3 /usr/local/bin/ferocious.py --import'"
+    "# MindGate commands"
+    "alias mindgate-status='sudo python3 /usr/local/bin/mindgate.py --status'"
+    "alias mindgate-add='sudo python3 /usr/local/bin/mindgate.py --add'"
+    "alias mindgate-import='sudo python3 /usr/local/bin/mindgate.py --import'"
+    "alias mindgate-list='sudo python3 /usr/local/bin/mindgate.py --list'"
+    "alias mindgate-edit='sudo python3 /usr/local/bin/mindgate.py --edit'"
+    "alias mindgate-stop='sudo python3 /usr/local/bin/mindgate.py --stop'"
+    "alias mindgate-start='sudo python3 /usr/local/bin/mindgate.py --start'"
+    "alias mindgate-restart='sudo python3 /usr/local/bin/mindgate.py --restart'"
+    "alias mindgate-password='sudo python3 /usr/local/bin/mindgate.py --password'"
+    "alias mindgate-uninstall='sudo python3 /usr/local/bin/mindgate.py --uninstall'"
 )
 
 # Check if aliases already exist
-if ! grep -q "Ferocious commands" ~/.bashrc; then
+if ! grep -q "MindGate commands" ~/.bashrc; then
     for line in "${ALIAS_LINES[@]}"; do
         echo "$line" >> ~/.bashrc
     done
@@ -67,31 +65,41 @@ else
     echo "ℹ️  Aliases already exist in ~/.bashrc"
 fi
 
-# 8. Add sudoers restrictions
+# 7. Add sudoers restrictions
 echo "🔒 Adding sudoers restrictions..."
-echo "faisal ALL=(ALL) ALL, !/usr/bin/chattr, !/usr/bin/chmod, !/bin/systemctl, !/usr/bin/gsettings" | sudo tee /etc/sudoers.d/ferocious
-sudo chmod 440 /etc/sudoers.d/ferocious
+echo "ALL ALL=(ALL) ALL, !/usr/bin/chattr, !/usr/bin/chmod, !/bin/systemctl" | sudo tee /etc/sudoers.d/mindgate
+sudo chmod 440 /etc/sudoers.d/mindgate
 
 echo "✅ Now you cannot:"
 echo "   - chattr -i (unlock files)"
-echo "   - systemctl stop ferocious"
-echo "   - gsettings (change proxy)"
+echo "   - chmod (change permissions)"
+echo "   - systemctl (stop service directly)"
+
+# 8. Persist iptables rules
+echo "💾 Persisting iptables rules..."
+if ! command -v iptables-save &> /dev/null; then
+    apt install -y iptables-persistent
+fi
+iptables-save > /etc/iptables/rules.v4
 
 # 9. Verify it's running
 echo ""
-echo "✅ Ferocious is ACTIVE!"
-echo "========================"
-echo "   Status: $(systemctl is-active ferocious)"
-echo "   Proxy: localhost:8080"
+echo "✅ MindGate is ACTIVE!"
+echo "======================================="
+echo "   Status: $(systemctl is-active mindgate)"
+echo "   Blocking: Network-level (iptables)"
 echo ""
 echo "📌 Commands (after 'source ~/.bashrc' or new terminal):"
-echo "   ferocious-status      - Check if blocking"
-echo "   ferocious-add         - Add single domain/keyword/subreddit"
-echo "   ferocious-import      - Import blocklist.txt file"
-echo "   ferocious-edit        - Edit config.json (requires password)"
-echo "   ferocious-stop        - Stop service (requires password)"
-echo "   ferocious-start       - Start service"
-echo "   ferocious-uninstall   - Remove Ferocious (requires password)"
+echo "   mindgate-status      - Check if blocking"
+echo "   mindgate-add         - Add single domain/keyword/subreddit"
+echo "   mindgate-import      - Import blocklist.txt file"
+echo "   mindgate-list        - View blocklist"
+echo "   mindgate-edit        - Edit config (requires password)"
+echo "   mindgate-stop        - Stop service (requires password)"
+echo "   mindgate-start       - Start service"
+echo "   mindgate-restart     - Restart service (requires password)"
+echo "   mindgate-password    - Change password"
+echo "   mindgate-uninstall   - Remove MindGate (requires password)"
 echo ""
 echo "📌 To reload aliases now: source ~/.bashrc"
-echo "========================"
+echo "======================================="
