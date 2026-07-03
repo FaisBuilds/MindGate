@@ -1,4 +1,4 @@
-# 🧠 MindGate v2 — Enterprise-Grade Website Blocker for Linux (2026)
+# 🧠 MindGate v2 — Strong Website Blocker for Linux (2026)
 
 **MindGate v2 is a production-grade, zero-compromise website blocker built for the modern Linux user.**
 
