@@ -1,0 +1,1 @@
+/home/faisal/Desktop/MindGate/target/debug/mindgated: /home/faisal/Desktop/MindGate/common/src/lib.rs /home/faisal/Desktop/MindGate/daemon/src/engine.rs /home/faisal/Desktop/MindGate/daemon/src/lock.rs /home/faisal/Desktop/MindGate/daemon/src/main.rs /home/faisal/Desktop/MindGate/daemon/src/server.rs /home/faisal/Desktop/MindGate/daemon/src/store.rs

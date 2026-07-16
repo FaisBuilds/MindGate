@@ -4,7 +4,8 @@ mod server;
 mod store;
 
 use anyhow::Result;
-use engine::NftEngine;
+// Use crate:: to explicitly direct the compiler to our sibling module
+use crate::engine::NftEngine;
 use mindgate_common::{config_dir, rules_path, LockState, RuleSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -27,6 +28,7 @@ pub struct AppState {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Initialize tracing (ensure tracing-subscriber is in daemon/Cargo.toml dependencies)
     tracing_subscriber::fmt::init();
 
     let rules = store::load().await?;
