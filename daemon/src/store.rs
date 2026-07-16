@@ -99,3 +99,5 @@ mod tests {
         std::env::remove_var("MINDGATE_CONFIG_DIR");
     }
 }
+
+
