@@ -167,7 +167,7 @@ fn print_status_info(status: StatusInfo) {
 /// using length-prefixed protocol forwarding.
 async fn run_native_bridge() -> Result<()> {
     let path = socket_path();
-    let socket = UnixStream::connect(&path)...
+    let socket = UnixStream::connect(&path)
     .await
         .with_context(|| format!("Bridge mode failed to connect to daemon socket at {}", path.display()))?;
 

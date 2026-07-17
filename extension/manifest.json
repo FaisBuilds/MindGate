@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "MindGate Protector",
+  "version": "0.1.0",
+  "description": "Browser-level enforcement layer for MindGate rules (Keywords & Subreddits).",
+  "permissions": [
+    "nativeMessaging",
+    "storage",
+    "tabs",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "protector@mindgate.local"
+    }
+  }
+}
