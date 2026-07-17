@@ -24,6 +24,62 @@
 //!      nftables set that drops matching traffic outright — this is
 //!      what survives CDN IP rotation and catches anything that still
 //!      has a stale/cached resolution.
+//!
+//! ## Orphaned-resolver self-healing (added after a real outage)
+//!
+//! `resolver_child` is only tracked in this struct's memory, inside a
+//! single running `mindgated` process. If the daemon dies any way
+//! other than a clean, cooperative shutdown — crash, `kill -9`,
+//! `Ctrl+C` without a signal handler upstream in `main.rs`, `cargo run`
+//! being interrupted mid-test — the spawned `dnsmasq` child does NOT
+//! die with it. It gets reparented to init and keeps running,
+//! forever, still bound to `127.0.0.1:5353`, still serving whatever
+//! rule set was on disk at the moment of death.
+//!
+//! The next time the daemon starts, it has a brand-new, empty
+//! `resolver_child: None` — zero awareness that anything is already
+//! squatting on the port. `apply_resolver` used to just try to spawn a
+//! fresh dnsmasq on top of that, which either fails to bind and dies
+//! near-instantly (silently — `.spawn()` succeeding only proves a
+//! process was forked, not that it bound anything), or races the old
+//! one in a way that leaves a window where NOTHING is listening on
+//! 5353. Either way, `nft` gets told "redirect all DNS here"
+//! regardless, and for that window every DNS query on the machine —
+//! not just blocked domains — dies. That's a full internet outage
+//! that looks intermittent and unrelated to the blocklist, because
+//! it's purely a timing/orphan bug, not a logic bug in the rules
+//! themselves.
+//!
+//! Fix has two parts, both below: (1) `ensure_port_clear` runs at the
+//! top of every `apply()` and kills any dnsmasq we ourselves left
+//! running from a previous crashed session, identified by matching its
+//! `--conf-file` argument against our own config path — NOT by killing
+//! whatever happens to be on the port. An earlier version of this fix
+//! did exactly that (`fuser -k <port>`), and it once killed
+//! `avahi-daemon` — a legitimate, unrelated system service sharing the
+//! port at the time — which systemd immediately respawned, re-winning
+//! the bind race against our own dnsmasq. Matching on the config path
+//! we control can never collide with an unrelated service, regardless
+//! of what else happens to be running. (2) `apply_resolver` verifies
+//! the newly spawned dnsmasq is still alive a moment after spawning,
+//! and refuses to let `apply()` proceed to committing nft rules if it
+//! isn't, instead of silently logging success. (2) is a safety net for
+//! the cases (1) doesn't cover (bad conf syntax, permissions, a port
+//! genuinely still in use for some other reason) — it should rarely
+//! fire once (1) is in place.
+//!
+//! Separately: `RESOLVER_PORT` itself was moved off `5353`, which is
+//! the IANA-reserved mDNS port that `avahi-daemon` binds by default on
+//! most desktop Linux installs — see the constant's own doc comment.
+//!
+//! The other half of this fix — making `mindgated` itself clean up on
+//! a *graceful* stop (SIGINT/SIGTERM: kill the child, flush both nft
+//! tables) — belongs in `main.rs`, not here, since it needs a signal
+//! handler at the top level. Not yet implemented; `ensure_port_clear`
+//! here means an ungraceful death is no longer catastrophic, but a
+//! graceful-shutdown handler is still the right long-term fix so
+//! stopping `mindgated` doesn't leave firewall rules active with no
+//! daemon behind them.
 
 use anyhow::{Context, Result};
 use mindgate_common::{RuleSet, WebsiteRule};
@@ -50,7 +106,18 @@ const FIREFOX_DOH_CANARY: &str = "use-application-dns.net";
 /// not 53 itself — nftables redirects traffic *to* this port, dnsmasq
 /// doesn't need to (and as a non-root-friendly default, shouldn't try
 /// to) bind the privileged port directly in dev mode.
-const RESOLVER_PORT: u16 = 5353;
+///
+/// Deliberately NOT 5353: that's the IANA-reserved mDNS port (RFC
+/// 6762), and `avahi-daemon` — which ships enabled by default on
+/// Ubuntu desktop and most other desktop Linux — permanently binds
+/// `0.0.0.0:5353`. This isn't a one-time orphan to clean up; it's a
+/// structural conflict with a legitimate, unrelated system service
+/// that will never go away. Found this the hard way: killing whatever
+/// held 5353 to "fix" it just killed avahi-daemon, which systemd
+/// immediately respawned, re-winning the bind race against our own
+/// dnsmasq every time. Picking a port outside any standard reserved
+/// range avoids the whole class of problem instead of fighting it.
+const RESOLVER_PORT: u16 = 55353;
 
 /// The real DNS server our local resolver forwards to when a domain
 /// isn't blocked. Defined once here rather than as a separate literal
@@ -60,12 +127,26 @@ const RESOLVER_PORT: u16 = 5353;
 /// request back to itself (see `render_dns_redirect_script` docs).
 const UPSTREAM_RESOLVER: &str = "1.1.1.1";
 
+/// How long we give a freshly-spawned dnsmasq to either bind
+/// successfully or die trying, before we trust it enough to commit
+/// nft rules against it. This is not "how long dnsmasq takes to
+/// start" (that's near-instant) — it's just enough time for a bind
+/// failure (port already held by a stale orphan) to surface as a
+/// process exit, which `try_wait()` can then observe.
+const RESOLVER_LIVENESS_CHECK_DELAY_MS: u64 = 150;
+
 pub struct NftEngine {
     nft_binary: PathBuf,
     dnsmasq_binary: PathBuf,
     /// Handle to our spawned dnsmasq child, if running. Held behind a
     /// mutex because `apply()` needs to kill-and-respawn it on every
     /// rule change, and the server dispatches requests concurrently.
+    ///
+    /// NOTE: this is in-memory only and does NOT survive a daemon
+    /// restart. It is not a reliable source of truth for "is a
+    /// resolver already running on RESOLVER_PORT" — see
+    /// `ensure_port_clear` and the module-level doc comment above for
+    /// why we no longer rely on it for that question.
     resolver_child: Mutex<Option<Child>>,
 }
 
@@ -105,6 +186,117 @@ impl NftEngine {
             .await
             .map(|s| s.success())
             .unwrap_or(false)
+    }
+
+    /// Clear an orphaned dnsmasq left behind by a previous, ungracefully-
+    /// killed `mindgated` process — and ONLY that. Does not touch
+    /// anything else that might be on `RESOLVER_PORT`.
+    ///
+    /// This used to shell out to `fuser -k <port>/udp`, which kills
+    /// whatever process holds the port, no matter what it is. In
+    /// practice that meant it once killed `avahi-daemon` (a legitimate,
+    /// unrelated system service that also happened to be sharing the
+    /// port at the time), which systemd immediately respawned, re-
+    /// winning the bind race against our own dnsmasq. A port-based kill
+    /// can never distinguish "our own leaked child" from "some other
+    /// service that happens to be there" — it has no way to know whose
+    /// process it's about to kill. Matching on our own `--conf-file`
+    /// argument does: only a dnsmasq WE spawned is invoked with this
+    /// exact config path, so this can't collide with anything else on
+    /// the system regardless of what port anyone else is using.
+    ///
+    /// Best-effort and intentionally quiet on failure: if `pgrep`/`kill`
+    /// aren't available, or there's nothing to clean up, that's fine —
+    /// this is a defensive clear, not a required step for correctness
+    /// on a normal clean start.
+    async fn ensure_port_clear(&self, config_path: &PathBuf) {
+        let pattern = format!("dnsmasq.*--conf-file[= ]{}", config_path.display());
+
+        let output = Command::new("pgrep")
+            .args(["-f", &pattern])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .await;
+
+        let Ok(output) = output else {
+            tracing::warn!(
+                "could not run `pgrep` to check for a leaked dnsmasq from a previous \
+                 run (is `procps` installed?). Continuing anyway — the post-spawn \
+                 liveness check will catch a real conflict."
+            );
+            return;
+        };
+
+        let pids: Vec<&str> = std::str::from_utf8(&output.stdout)
+            .unwrap_or("")
+            .lines()
+            .filter(|l| !l.is_empty())
+            .collect();
+
+        if pids.is_empty() {
+            return;
+        }
+
+        tracing::warn!(
+            "found {} leaked dnsmasq process(es) from a previous run (config: {}), \
+             killing before starting a fresh one: {:?}",
+            pids.len(),
+            config_path.display(),
+            pids
+        );
+
+        // SIGKILL, not SIGTERM: a leaked process may be in a stopped
+        // (SIGTSTP / job-control "Stopped") state, e.g. from a `Ctrl+Z`
+        // during manual testing rather than a true orphan. SIGTERM
+        // sent to a stopped process is queued by the kernel and only
+        // delivered once the process is resumed — it does NOT act on
+        // it immediately, so a "successful" kill can silently do
+        // nothing while the process keeps holding the port. SIGKILL
+        // is delivered immediately regardless of stop state.
+        for pid in &pids {
+            let _ = Command::new("kill")
+                .args(["-KILL", pid])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .await;
+        }
+
+        // Poll for actual exit instead of a fixed sleep-and-hope: keep
+        // checking (via `kill -0`, which sends no signal and just
+        // tests whether the PID still exists) until every PID is
+        // confirmed gone, or we give up after a short timeout and let
+        // the post-spawn liveness check catch it as a last resort.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1000);
+        loop {
+            let mut any_alive = false;
+            for pid in &pids {
+                let alive = Command::new("kill")
+                    .args(["-0", pid])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .await
+                    .map(|s| s.success())
+                    .unwrap_or(false);
+                if alive {
+                    any_alive = true;
+                }
+            }
+            if !any_alive {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                tracing::warn!(
+                    "one or more leaked dnsmasq processes did not exit within 1s \
+                     of SIGKILL — proceeding anyway, the post-spawn liveness \
+                     check will catch it if the port is still held"
+                );
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
     }
 
     /// Resolve every website domain to its current IP set, so we can
@@ -257,6 +449,13 @@ impl NftEngine {
     /// Idempotent: any previously-running instance is killed first, so
     /// repeated calls converge on the current rule set rather than
     /// leaving stale processes behind.
+    ///
+    /// Ordering, changed from the original version: we now spawn the
+    /// NEW child and confirm it's alive BEFORE killing the old one we
+    /// have a handle to. Killing old-then-spawning-new left a window
+    /// where, if the new spawn failed, we'd have zero resolvers
+    /// running at all. Spawning-then-verifying-then-killing-old means
+    /// there's always at least one resolver up during the transition.
     async fn apply_resolver(&self, websites: &[WebsiteRule], config_path: &PathBuf) -> Result<()> {
         if !self.dnsmasq_available().await {
             tracing::warn!(
@@ -266,6 +465,14 @@ impl NftEngine {
             return Ok(());
         }
 
+        // Clear any orphan from a previous ungraceful shutdown before
+        // we do anything else. See module-level doc comment and
+        // `ensure_port_clear` doc comment for why this can't be
+        // handled by killing `self.resolver_child` alone, and why it
+        // now matches on our own config path rather than "whatever is
+        // on the port."
+        self.ensure_port_clear(config_path).await;
+
         let config = Self::render_resolver_config(websites, UPSTREAM_RESOLVER);
         if let Some(parent) = config_path.parent() {
             tokio::fs::create_dir_all(parent).await.ok();
@@ -274,19 +481,72 @@ impl NftEngine {
             .await
             .with_context(|| format!("failed to write {}", config_path.display()))?;
 
-        let mut guard = self.resolver_child.lock().await;
-        if let Some(mut child) = guard.take() {
-            let _ = child.kill().await;
-        }
-
-        let child = Command::new(&self.dnsmasq_binary)
-            .args(["--keep-in-foreground", "--conf-file"])
-            .arg(config_path)
+        let mut new_child = Command::new(&self.dnsmasq_binary)
+            .arg("--keep-in-foreground")
+            // MUST be one combined `--conf-file=path` token, not two
+            // separate argv entries (`--conf-file`, then the path).
+            // This dnsmasq build's own argument parser rejects the
+            // split form with "junk found in command line" — found by
+            // running the exact same invocation by hand. This was
+            // very likely broken from day one; it went unnoticed
+            // because a manually-started dnsmasq (using the correct
+            // `=` form) happened to already be sitting on the port
+            // during earlier testing, silently covering for every
+            // failed spawn attempt the daemon itself made.
+            .arg(format!("--conf-file={}", config_path.display()))
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
             .context("failed to spawn dnsmasq")?;
-        *guard = Some(child);
+
+        // Give it a moment to either bind or die. `.spawn()` succeeding
+        // only proves a process was forked, not that it bound the
+        // port — a stale orphan already holding RESOLVER_PORT (or a
+        // bad conf, or a permissions issue) will make dnsmasq exit
+        // almost immediately. Without this check we'd log success
+        // and let `apply()` go on to commit nft rules that redirect
+        // all system DNS into a process that's already dead.
+        tokio::time::sleep(std::time::Duration::from_millis(
+            RESOLVER_LIVENESS_CHECK_DELAY_MS,
+        ))
+        .await;
+
+        match new_child.try_wait() {
+            Ok(Some(status)) => {
+                use tokio::io::AsyncReadExt;
+                let mut stderr_output = String::new();
+                if let Some(mut stderr) = new_child.stderr.take() {
+                    let _ = stderr.read_to_string(&mut stderr_output).await;
+                }
+                anyhow::bail!(
+                    "dnsmasq exited immediately after spawn (status: {status}). \
+                     dnsmasq stderr: {}",
+                    if stderr_output.trim().is_empty() {
+                        "<empty — dnsmasq printed nothing to stderr>".to_string()
+                    } else {
+                        stderr_output.trim().to_string()
+                    }
+                );
+            }
+            Ok(None) => {
+                // Still running — good, trust it.
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "could not confirm dnsmasq liveness ({e}) — proceeding, but \
+                     this check existing to catch exactly the failure mode it \
+                     just failed to check for."
+                );
+            }
+        }
+
+        // Only now, with the new instance confirmed alive, replace and
+        // kill whatever we previously held a handle to.
+        let mut guard = self.resolver_child.lock().await;
+        if let Some(mut old) = guard.take() {
+            let _ = old.kill().await;
+        }
+        *guard = Some(new_child);
 
         tracing::info!("local resolver (dnsmasq) running on 127.0.0.1:{}", RESOLVER_PORT);
         Ok(())
@@ -359,6 +619,12 @@ impl NftEngine {
     /// whatever the system's default resolver happens to be — not yet
     /// implemented; `resolve_all` still uses the system resolver via
     /// `to_socket_addrs()`.
+    ///
+    /// If `apply_resolver` bails (e.g. the liveness check above
+    /// failed), `apply()` now returns that error immediately and does
+    /// NOT go on to apply the nft DNS redirect — see the `?` below.
+    /// That's the second half of the fix: even if the resolver is
+    /// somehow unhealthy, we never commit the redirect against it.
     pub async fn apply(&self, rules: &RuleSet, resolver_config_path: &PathBuf) -> Result<()> {
         let ips = Self::resolve_all(&rules.websites).await;
 
@@ -385,6 +651,39 @@ impl NftEngine {
             ips.len()
         );
         Ok(())
+    }
+
+    /// Tear down everything this engine may have set up: kill the
+    /// resolver child if we're holding a handle to it, and flush both
+    /// nft tables. Intended to be called from a graceful-shutdown
+    /// signal handler in `main.rs` (SIGINT/SIGTERM) so stopping
+    /// `mindgated` cleanly doesn't leave firewall rules active with no
+    /// daemon behind them.
+    ///
+    /// This does NOT solve the ungraceful-death case (crash, SIGKILL)
+    /// — nothing running in-process can, by definition. That case is
+    /// covered by `ensure_port_clear` (for the resolver) and should
+    /// additionally be covered by `KillMode=control-group` in the
+    /// systemd unit (for both the resolver and, longer-term, for
+    /// leftover nft state — though nft rules are kernel-resident and
+    /// systemd killing the daemon won't remove them; a graceful stop
+    /// via this method is the only thing that removes them, which is
+    /// exactly why the signal handler in `main.rs` matters).
+    pub async fn teardown(&self) {
+        let mut guard = self.resolver_child.lock().await;
+        if let Some(mut child) = guard.take() {
+            let _ = child.kill().await;
+        }
+        drop(guard);
+
+        for (family, table) in [("ip", NAT_TABLE), ("inet", FILTER_TABLE)] {
+            let _ = Command::new(&self.nft_binary)
+                .args(["delete", "table", family, table])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .await;
+        }
     }
 }
 

@@ -52,8 +52,23 @@ fn peer_uid(stream: &UnixStream) -> Option<u32> {
 
 fn authorized(stream: &UnixStream) -> bool {
     let my_uid = unsafe { libc::getuid() };
+
+    // If `mindgated` itself was launched via `sudo` (needed for the
+    // nft/dnsmasq calls in engine.rs, which require root), `my_uid`
+    // here is 0 — root. That collapses the check below to "peer must
+    // be root," which permanently locks out every unprivileged
+    // process the same human runs under their own account: the CLI,
+    // and critically the browser extension's native-messaging bridge,
+    // which Chrome always spawns as the logged-in desktop user, never
+    // as root. `sudo` sets SUDO_UID to the original invoking user's
+    // UID precisely so a root-elevated process can still recognize
+    // "this is the same human, just unprivileged" — we use it here so
+    // that user's own CLI/extension processes remain authorized even
+    // though the daemon had to become root to do its job.
+    let sudo_uid: Option<u32> = std::env::var("SUDO_UID").ok().and_then(|s| s.parse().ok());
+
     match peer_uid(stream) {
-        Some(uid) => uid == my_uid || uid == 0,
+        Some(uid) => uid == my_uid || uid == 0 || Some(uid) == sudo_uid,
         None => false,
     }
 }
@@ -96,6 +111,24 @@ pub async fn run(state: Arc<AppState>) -> Result<()> {
 
     let listener = UnixListener::bind(&path)
         .with_context(|| format!("failed to bind {}", path.display()))?;
+
+    // The bind() above creates the socket file owned by whatever UID
+    // mindgated itself is running as. When that's root (`sudo -E
+    // target/debug/mindgated`, needed for the nft/dnsmasq calls in
+    // engine.rs), the resulting socket defaults to owner-only write
+    // access — which blocks every unprivileged connecting process,
+    // including the browser extension's native-messaging bridge that
+    // Chrome always spawns as the logged-in desktop user, never as
+    // root. Real access control happens via SO_PEERCRED in
+    // `authorized()` below, which checks the actual connecting
+    // process's credentials — the file permissions here are
+    // deliberately permissive so that check is what decides who's
+    // allowed in, not the mode bits on the socket path.
+    use std::os::unix::fs::PermissionsExt;
+    tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666))
+        .await
+        .with_context(|| format!("failed to set permissions on {}", path.display()))?;
+
     tracing::info!("listening on {}", path.display());
 
     loop {
