@@ -52,6 +52,14 @@ const FIREFOX_DOH_CANARY: &str = "use-application-dns.net";
 /// to) bind the privileged port directly in dev mode.
 const RESOLVER_PORT: u16 = 5353;
 
+/// The real DNS server our local resolver forwards to when a domain
+/// isn't blocked. Defined once here rather than as a separate literal
+/// in both `render_resolver_config` and `render_dns_redirect_script` —
+/// those two MUST agree, since the redirect rule's job is specifically
+/// to let dnsmasq reach *this exact* address without looping the
+/// request back to itself (see `render_dns_redirect_script` docs).
+const UPSTREAM_RESOLVER: &str = "1.1.1.1";
+
 pub struct NftEngine {
     nft_binary: PathBuf,
     dnsmasq_binary: PathBuf,
@@ -137,19 +145,36 @@ impl NftEngine {
         let v6: Vec<String> =
             ips.iter().filter(|ip| ip.is_ipv6()).map(|ip| ip.to_string()).collect();
 
+        // nft rejects an explicit-but-empty `elements = {  }` line as a
+        // syntax error — an empty set must simply omit the elements line
+        // altogether (the set still exists, just starts with nothing in
+        // it). So only emit `elements = { ... }` when there's at least
+        // one address; a `flags interval;`-only set block is valid nft
+        // and is exactly what you get on the very first `apply()` before
+        // any domain has resolved to anything, or if a domain resolves
+        // to only one address family.
+        let v4_elements = if v4.is_empty() {
+            String::new()
+        } else {
+            format!("        elements = {{ {} }}\n", v4.join(", "))
+        };
+        let v6_elements = if v6.is_empty() {
+            String::new()
+        } else {
+            format!("        elements = {{ {} }}\n", v6.join(", "))
+        };
+
         format!(
             r#"table inet {table} {{
     set blocked_v4 {{
         type ipv4_addr;
         flags interval;
-        elements = {{ {v4_set} }}
-    }}
+{v4_elements}    }}
 
     set blocked_v6 {{
         type ipv6_addr;
         flags interval;
-        elements = {{ {v6_set} }}
-    }}
+{v6_elements}    }}
 
     chain output {{
         type filter hook output priority 0; policy accept;
@@ -160,8 +185,8 @@ impl NftEngine {
 }}
 "#,
             table = FILTER_TABLE,
-            v4_set = v4.join(", "),
-            v6_set = v6.join(", "),
+            v4_elements = v4_elements,
+            v6_elements = v6_elements,
         )
     }
 
@@ -169,16 +194,30 @@ impl NftEngine {
     /// outbound DNS (port 53, tcp+udp) to our local resolver. This is
     /// the anti-bypass foundation — it applies regardless of what the
     /// app or OS resolver config claims to be using.
-    pub fn render_dns_redirect_script() -> String {
+    ///
+    /// Critical exception, found the hard way: this hook fires on
+    /// *all* outbound port-53 traffic system-wide, with no way to tell
+    /// "some random app's query" apart from "our own local resolver
+    /// asking the real upstream for an answer" — dnsmasq's own outbound
+    /// query to `upstream` is itself outbound traffic to port 53, so
+    /// without this exception it gets redirected right back to itself,
+    /// forming a loop that never reaches the real internet. That
+    /// doesn't just break blocked domains — it breaks DNS resolution
+    /// entirely, system-wide, since dnsmasq can never get a real answer
+    /// from anywhere. `upstream` must be excluded from the redirect so
+    /// the local resolver can actually do its job.
+    pub fn render_dns_redirect_script(upstream: &str) -> String {
         format!(
             r#"table ip {table} {{
     chain output {{
         type nat hook output priority -100; policy accept;
+        ip daddr {upstream} accept
         meta l4proto {{ tcp, udp }} th dport 53 redirect to :{port}
     }}
 }}
 "#,
             table = NAT_TABLE,
+            upstream = upstream,
             port = RESOLVER_PORT,
         )
     }
@@ -227,7 +266,7 @@ impl NftEngine {
             return Ok(());
         }
 
-        let config = Self::render_resolver_config(websites, "1.1.1.1");
+        let config = Self::render_resolver_config(websites, UPSTREAM_RESOLVER);
         if let Some(parent) = config_path.parent() {
             tokio::fs::create_dir_all(parent).await.ok();
         }
@@ -295,7 +334,34 @@ impl NftEngine {
     /// Apply the full rule set: local resolver, DNS redirect + DoT
     /// block, and IP-level website blocking. This is the single
     /// entry point `server.rs` calls after every mutation.
+    ///
+    /// Order matters here in a way that isn't obvious: `resolve_all`
+    /// MUST run before `apply_resolver` reconfigures dnsmasq to
+    /// blackhole these same domains. Found the hard way — if the
+    /// blackhole config goes in first, our own lookup of "what IP is
+    /// example.com" gets asked to the very resolver we just told to
+    /// refuse to answer that question, so it always comes back with
+    /// zero addresses. Resolving first (while the domain is still
+    /// answerable through whatever resolver was active before this
+    /// apply cycle) gets us a real address to put in the IP-level
+    /// block set; only then do we blackhole the domain at the DNS
+    /// layer, which is the primary block anyway — the IP set is
+    /// defense-in-depth, not the main mechanism.
+    ///
+    /// Known remaining limitation, not fixed by this reordering: once
+    /// a domain has been through one `apply()` cycle, it IS blackholed
+    /// by the currently-running dnsmasq from then on. A future re-add
+    /// of the same domain, or a periodic re-resolve (CONTEXT.md §4
+    /// point 5 — not yet implemented as a running loop in this file),
+    /// would hit this exact problem again, since by then our own
+    /// resolver is already refusing to answer. The permanent fix is
+    /// resolving directly against `UPSTREAM_RESOLVER`, bypassing
+    /// whatever the system's default resolver happens to be — not yet
+    /// implemented; `resolve_all` still uses the system resolver via
+    /// `to_socket_addrs()`.
     pub async fn apply(&self, rules: &RuleSet, resolver_config_path: &PathBuf) -> Result<()> {
+        let ips = Self::resolve_all(&rules.websites).await;
+
         self.apply_resolver(&rules.websites, resolver_config_path).await?;
 
         if !self.nft_available().await {
@@ -307,10 +373,9 @@ impl NftEngine {
             return Ok(());
         }
 
-        let redirect_script = Self::render_dns_redirect_script();
+        let redirect_script = Self::render_dns_redirect_script(UPSTREAM_RESOLVER);
         self.apply_nft_script("ip", NAT_TABLE, &redirect_script).await?;
 
-        let ips = Self::resolve_all(&rules.websites).await;
         let filter_script = Self::render_filter_script(&ips);
         self.apply_nft_script("inet", FILTER_TABLE, &filter_script).await?;
 
@@ -342,16 +407,49 @@ mod tests {
 
     #[test]
     fn filter_script_handles_empty_set() {
+        // Regression test for a real bug caught against actual `nft`:
+        // an explicit `elements = {  }` is a syntax error to nft, so an
+        // empty set must omit the elements line entirely rather than
+        // emit it with nothing inside.
         let script = NftEngine::render_filter_script(&BTreeSet::new());
-        assert!(script.contains("elements = {  }") || script.contains("elements = { }"));
+        assert!(!script.contains("elements ="));
+        assert!(script.contains("set blocked_v4"));
+        assert!(script.contains("set blocked_v6"));
+    }
+
+    #[test]
+    fn filter_script_omits_elements_for_family_with_no_addresses() {
+        // A domain that only resolves to, say, IPv6 shouldn't produce a
+        // broken empty `elements = {  }` for the untouched v4 set.
+        let mut ips = BTreeSet::new();
+        ips.insert("2606:2800:220:1:248:1893:25c8:1946".parse::<IpAddr>().unwrap());
+        let script = NftEngine::render_filter_script(&ips);
+        let v4_block = script.split("set blocked_v4").nth(1).unwrap().split("set blocked_v6").next().unwrap();
+        assert!(!v4_block.contains("elements ="));
     }
 
     #[test]
     fn dns_redirect_script_targets_resolver_port() {
-        let script = NftEngine::render_dns_redirect_script();
+        let script = NftEngine::render_dns_redirect_script(UPSTREAM_RESOLVER);
         assert!(script.contains("table ip mindgate_dns"));
         assert!(script.contains("th dport 53 redirect to :5353"));
         assert!(script.contains("hook output priority -100"));
+    }
+
+    #[test]
+    fn dns_redirect_script_exempts_upstream_to_avoid_self_redirect_loop() {
+        // Regression test for a real bug found by hand: without this
+        // exception, dnsmasq's own outbound query to the upstream
+        // resolver gets caught by the same rule and redirected back to
+        // itself, breaking ALL DNS resolution system-wide (not just
+        // blocked domains) rather than just enforcing blocks.
+        let script = NftEngine::render_dns_redirect_script(UPSTREAM_RESOLVER);
+        assert!(script.contains(&format!("ip daddr {} accept", UPSTREAM_RESOLVER)));
+        // The accept exception must come before the redirect rule —
+        // nft evaluates rules in order within a chain.
+        let accept_pos = script.find("accept").unwrap();
+        let redirect_pos = script.find("redirect to").unwrap();
+        assert!(accept_pos < redirect_pos);
     }
 
     #[test]
