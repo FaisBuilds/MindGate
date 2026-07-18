@@ -13,25 +13,34 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Block a website domain-wide (network layer)
+    /// Block something. Two forms:
+    ///   mindgate add <domain>              — block a whole site (network layer)
+    ///   mindgate add path <domain>/<path>  — block a path prefix on a site (browser layer)
+    ///
+    /// There is no site-specific command (no `add-subreddit`, etc).
+    /// "path" teaches MindGate about URLs in general, so the same
+    /// mechanism covers reddit.com/r/gaming today and
+    /// youtube.com/shorts or instagram.com/reels tomorrow, with
+    /// nothing new to build.
+    ///
+    /// Examples:
+    ///   mindgate add youtube.com
+    ///   mindgate add path reddit.com/r/gaming
+    ///   mindgate add path github.com/trending
     Add {
-        /// The domain to block (e.g., reddit.com)
-        domain: String,
+        /// Either `<domain>`, or the literal `path` followed by
+        /// `<domain>/<path-prefix>` (e.g. `path reddit.com/r/gaming`)
+        #[arg(num_args = 1..=2)]
+        target: Vec<String>,
     },
-    /// Unblock a website domain-wide
+    /// Unblock something. Same two forms as `add`:
+    ///   mindgate remove <domain>
+    ///   mindgate remove path <domain>/<path>
     Remove {
-        /// The domain to unblock
-        domain: String,
-    },
-    /// Block a specific subreddit (browser layer)
-    AddSubreddit {
-        /// The subreddit name to block (e.g., gonewild)
-        name: String,
-    },
-    /// Unblock a specific subreddit
-    RemoveSubreddit {
-        /// The subreddit name to unblock
-        name: String,
+        /// Either `<domain>`, or the literal `path` followed by
+        /// `<domain>/<path-prefix>`
+        #[arg(num_args = 1..=2)]
+        target: Vec<String>,
     },
     /// Block any URL containing a keyword (browser layer)
     AddKeyword {
@@ -125,6 +134,164 @@ fn parse_duration(input: &str) -> Result<Option<u64>, String> {
     }
 
     Ok(Some(seconds))
+}
+
+/// What `add`/`remove`'s trailing args resolved to.
+enum Target {
+    /// `mindgate add youtube.com` — whole-domain, network-layer block.
+    Website(String),
+    /// `mindgate add path reddit.com/r/gaming` — domain-scoped
+    /// path-prefix, browser-layer block.
+    Path { domain: String, path: String },
+}
+
+/// Parses the `Vec<String>` collected by clap for `add`/`remove` into
+/// a `Target`. Two shapes are accepted:
+///   [domain]              -> Target::Website
+///   ["path", combined]    -> Target::Path (via split_domain_path)
+/// Anything else (0 args, 2+ args not starting with the literal
+/// "path", 3+ args) is a usage error, reported client-side before any
+/// socket round trip.
+fn parse_target(args: &[String]) -> Result<Target, String> {
+    match args {
+        [] => Err(
+            "expected a domain, or `path <domain>/<path>` — e.g. `mindgate add youtube.com` \
+             or `mindgate add path reddit.com/r/gaming`"
+                .to_string(),
+        ),
+        [only] => {
+            if only.eq_ignore_ascii_case("path") {
+                Err(
+                    "`path` needs a `<domain>/<path>` argument, e.g. \
+                     `mindgate add path reddit.com/r/gaming`"
+                        .to_string(),
+                )
+            } else {
+                Ok(Target::Website(only.trim().to_lowercase()))
+            }
+        }
+        [literal, combined] if literal.eq_ignore_ascii_case("path") => {
+            let (domain, path) = split_domain_path(combined)?;
+            Ok(Target::Path { domain, path })
+        }
+        _ => Err(format!(
+            "unrecognized arguments '{}' — usage: `mindgate add <domain>` or \
+             `mindgate add path <domain>/<path>`",
+            args.join(" ")
+        )),
+    }
+}
+
+/// Splits a combined `domain/path` string like `reddit.com/r/gaming`
+/// into `("reddit.com", "/r/gaming")`. The path keeps its leading `/`
+/// (matches the shape `PathRule.path` and `content.js`'s prefix check
+/// already expect). Domain is lowercased for consistent dedup against
+/// whatever's already staged; the path's case is left alone since some
+/// sites' paths are case-sensitive.
+fn split_domain_path(combined: &str) -> Result<(String, String), String> {
+    let trimmed = combined.trim();
+    let slash_idx = trimmed.find('/').ok_or_else(|| {
+        format!(
+            "'{trimmed}' needs a path — e.g. `mindgate add path {trimmed}/r/gaming`"
+        )
+    })?;
+
+    let domain = &trimmed[..slash_idx];
+    let path = &trimmed[slash_idx..]; // keeps the leading '/'
+
+    if domain.is_empty() {
+        return Err(format!("'{trimmed}' is missing a domain before the path"));
+    }
+    if path.len() <= 1 {
+        return Err(format!(
+            "'{trimmed}' is missing a path after the domain — e.g. \
+             `mindgate add path {domain}/r/gaming`"
+        ));
+    }
+
+    Ok((domain.to_lowercase(), path.to_string()))
+}
+
+#[cfg(test)]
+mod target_parsing_tests {
+    use super::*;
+
+    #[test]
+    fn bare_domain_is_a_website_target() {
+        match parse_target(&["youtube.com".to_string()]).unwrap() {
+            Target::Website(d) => assert_eq!(d, "youtube.com"),
+            _ => panic!("expected Website"),
+        }
+    }
+
+    #[test]
+    fn domain_is_lowercased() {
+        match parse_target(&["YouTube.com".to_string()]).unwrap() {
+            Target::Website(d) => assert_eq!(d, "youtube.com"),
+            _ => panic!("expected Website"),
+        }
+    }
+
+    #[test]
+    fn path_literal_splits_domain_and_path() {
+        match parse_target(&["path".to_string(), "reddit.com/r/gaming".to_string()]).unwrap() {
+            Target::Path { domain, path } => {
+                assert_eq!(domain, "reddit.com");
+                assert_eq!(path, "/r/gaming");
+            }
+            _ => panic!("expected Path"),
+        }
+    }
+
+    #[test]
+    fn path_literal_is_case_insensitive() {
+        assert!(parse_target(&["PATH".to_string(), "x.com/foo".to_string()]).is_ok());
+    }
+
+    #[test]
+    fn path_preserves_nested_prefix() {
+        match parse_target(&["path".to_string(), "youtube.com/shorts".to_string()]).unwrap() {
+            Target::Path { domain, path } => {
+                assert_eq!(domain, "youtube.com");
+                assert_eq!(path, "/shorts");
+            }
+            _ => panic!("expected Path"),
+        }
+    }
+
+    #[test]
+    fn path_without_domain_slash_path_is_rejected() {
+        // "path reddit.com" alone has no '/' to split on.
+        assert!(parse_target(&["path".to_string(), "reddit.com".to_string()]).is_err());
+    }
+
+    #[test]
+    fn bare_path_literal_with_no_second_arg_is_rejected() {
+        assert!(parse_target(&["path".to_string()]).is_err());
+    }
+
+    #[test]
+    fn no_args_is_rejected() {
+        assert!(parse_target(&[]).is_err());
+    }
+
+    #[test]
+    fn too_many_args_is_rejected() {
+        assert!(parse_target(&[
+            "path".to_string(),
+            "reddit.com/r/gaming".to_string(),
+            "extra".to_string()
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn domain_only_named_path_is_rejected_without_second_arg() {
+        // Guards against a user typing just `mindgate add path` and
+        // getting a confusing "blocked domain: path" instead of a
+        // clear usage error.
+        assert!(parse_target(&["path".to_string()]).is_err());
+    }
 }
 
 fn format_duration_human(input: &str, seconds: Option<u64>) -> String {
@@ -244,7 +411,7 @@ async fn main() -> Result<()> {
                 }
             }
 
-            let req = Request::Lock { duration_secs, password: None };
+            let req = Request::Lock { duration_secs };
             match send_request_and_print_lock(req, &duration, duration_secs).await {
                 Ok(()) => {}
                 Err(e) => {
@@ -255,10 +422,22 @@ async fn main() -> Result<()> {
         }
         cmd => {
             let req = match cmd {
-                Commands::Add { domain } => Request::AddWebsite { domain },
-                Commands::Remove { domain } => Request::RemoveWebsite { domain },
-                Commands::AddSubreddit { name } => Request::AddSubreddit { subreddit: name },
-                Commands::RemoveSubreddit { name } => Request::RemoveSubreddit { subreddit: name },
+                Commands::Add { target } => match parse_target(&target) {
+                    Ok(Target::Website(domain)) => Request::AddWebsite { domain },
+                    Ok(Target::Path { domain, path }) => Request::AddPath { domain, path },
+                    Err(msg) => {
+                        eprintln!("Error: {msg}");
+                        std::process::exit(1);
+                    }
+                },
+                Commands::Remove { target } => match parse_target(&target) {
+                    Ok(Target::Website(domain)) => Request::RemoveWebsite { domain },
+                    Ok(Target::Path { domain, path }) => Request::RemovePath { domain, path },
+                    Err(msg) => {
+                        eprintln!("Error: {msg}");
+                        std::process::exit(1);
+                    }
+                },
                 Commands::AddKeyword { value } => Request::AddKeyword { value },
                 Commands::RemoveKeyword { value } => Request::RemoveKeyword { value },
                 Commands::List => Request::List,
@@ -373,21 +552,31 @@ async fn send_request_and_print(req: Request) -> Result<()> {
                 }
             }
 
-            println!("\n[Subreddits (Browser Layer)]");
-            if rules.subreddits.is_empty() {
-                println!("  (None)");
-            } else {
-                for s in rules.subreddits {
-                    println!("  * r/{}", s.subreddit);
-                }
-            }
-
             println!("\n[Keywords (Browser Layer)]");
             if rules.keywords.is_empty() {
                 println!("  (None)");
             } else {
                 for k in rules.keywords {
                     println!("  * {}", k.value);
+                }
+            }
+
+            // No Reddit-specific section here by design — `paths` is
+            // the one general mechanism (domain + path prefix), and
+            // covers reddit.com/r/gaming exactly the same way it
+            // covers youtube.com/shorts. Any LEGACY `rules.subreddits`
+            // entries (from before this command existed) are folded
+            // in here too, displayed as the equivalent reddit.com/r/
+            // path, so nothing from an older rules.toml goes missing.
+            println!("\n[Paths (Browser Layer)]");
+            if rules.paths.is_empty() && rules.subreddits.is_empty() {
+                println!("  (None)");
+            } else {
+                for p in &rules.paths {
+                    println!("  * {}{}", p.domain, p.path);
+                }
+                for s in &rules.subreddits {
+                    println!("  * reddit.com/r/{} (legacy)", s.subreddit);
                 }
             }
         }
@@ -436,7 +625,11 @@ fn print_status_info(status: StatusInfo) {
     println!("\n[Metrics]");
     println!("Total Rules:          {}", status.rule_count);
     println!("  - Websites:         {}", status.website_count);
-    println!("  - Subreddits:       {}", status.subreddit_count);
+    // Combined: `path_count` (the current mechanism) plus
+    // `subreddit_count` (legacy entries from before `add path`
+    // existed) — both are enforced the same way, so they're shown as
+    // one number rather than a Reddit-specific line item.
+    println!("  - Paths:            {}", status.path_count + status.subreddit_count);
     println!("  - Keywords:         {}", status.keyword_count);
 }
 

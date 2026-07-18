@@ -231,19 +231,23 @@ async fn dispatch(state: &AppState, req: Request) -> Response {
             rules.keywords.retain(|k| k.value != value);
             persist_only(&rules).await
         }
-        Request::AddSubreddit { subreddit } => {
+        // The one and only path-level "add a rule under a domain"
+        // primitive — no Reddit-specific command exists or is planned.
+        // `mindgate add path reddit.com/r/gaming` and `mindgate add
+        // path youtube.com/shorts` both land here identically.
+        Request::AddPath { domain, path } => {
             let mut rules = state.rules.lock().await;
-            if !rules.subreddits.iter().any(|s| s.subreddit == subreddit) {
-                rules.subreddits.push(mindgate_common::SubredditRule { subreddit });
+            if !rules.paths.iter().any(|p| p.domain == domain && p.path == path) {
+                rules.paths.push(mindgate_common::PathRule { domain, path });
             }
             persist_only(&rules).await
         }
-        Request::RemoveSubreddit { subreddit } => {
+        Request::RemovePath { domain, path } => {
             if let Some(resp) = reject_if_locked(state).await {
                 return resp;
             }
             let mut rules = state.rules.lock().await;
-            rules.subreddits.retain(|s| s.subreddit != subreddit);
+            rules.paths.retain(|p| !(p.domain == domain && p.path == path));
             persist_only(&rules).await
         }
         Request::List => {
@@ -253,23 +257,7 @@ async fn dispatch(state: &AppState, req: Request) -> Response {
         Request::Status => build_status(state).await,
 
         // --- The one and only activation path ---
-        Request::Lock { duration_secs, password } => {
-            // No unlock exists in this design, so a password on a lock
-            // request is meaningless — accepted for wire compatibility,
-            // ignored otherwise.
-            let _ = password;
-            lock_ruleset(state, duration_secs).await
-        }
-
-        // Not exposed by the CLI (there is intentionally no `unlock`
-        // command), but left wired at the protocol level rather than
-        // removed outright — harmless to keep, and avoids a breaking
-        // wire-format change for a variant that costs nothing sitting
-        // unused. Any client that does send this gets a clear rejection
-        // rather than a confusing runtime error.
-        Request::Unlock { .. } => Response::Error {
-            message: "unlock is not supported — a lock clears itself only when its timer expires".into(),
-        },
+        Request::Lock { duration_secs } => lock_ruleset(state, duration_secs).await,
 
         Request::ExtensionHeartbeat => {
             *state.last_heartbeat.lock().await = Some(Instant::now());
@@ -369,11 +357,7 @@ async fn lock_ruleset(state: &AppState, duration_secs: Option<u64>) -> Response 
     drop(rules);
 
     let mut lock_state = state.lock.lock().await;
-    // password_required is vestigial now that there's no unlock path
-    // — always false. Kept as a field on LockState rather than
-    // removed, since Status/StatusInfo still expose it and removing it
-    // would be a wire-format change for no functional gain.
-    lock::lock(&mut lock_state, duration_secs, false);
+    lock::lock(&mut lock_state, duration_secs);
 
     if let Err(e) = crate::store::save_lock(&lock_state).await {
         // Enforcement is already active at this point (engine.apply
@@ -424,6 +408,7 @@ async fn build_status(state: &AppState) -> Response {
         website_count: rules.websites.len(),
         keyword_count: rules.keywords.len(),
         subreddit_count: rules.subreddits.len(),
+        path_count: rules.paths.len(),
         extension_connected,
         lock: reported_lock,
     })

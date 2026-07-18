@@ -91,7 +91,7 @@ async function syncRules() {
 
   if (!locked) {
     console.log("[MindGate background] Ruleset is not locked — clearing local enforcement.");
-    await chrome.storage.local.set({ keywords: [], subreddits: [] });
+    await chrome.storage.local.set({ keywords: [], subreddits: [], paths: [] });
     return;
   }
 
@@ -105,14 +105,25 @@ async function syncRules() {
     return;
   }
 
-  // Response::Rules(RuleSet) encodes as { result: "Rules", data: { websites, keywords, subreddits } }
+  // Response::Rules(RuleSet) encodes as { result: "Rules", data: { websites, keywords, subreddits, paths } }
   if (listResponse?.result === "Rules" && listResponse?.data) {
     const keywords = (listResponse.data.keywords || []).map((k) => k.value);
     const subreddits = (listResponse.data.subreddits || []).map((s) => s.subreddit);
+    // NEW: general domain + path-prefix rules, synced alongside
+    // keywords/subreddits — doesn't change how either of those are
+    // extracted or stored.
+    const paths = (listResponse.data.paths || []).map((p) => ({
+      domain: p.domain,
+      path: p.path,
+    }));
 
-    console.log("[MindGate background] Extracted keywords:", keywords, "subreddits:", subreddits);
+    console.log(
+      "[MindGate background] Extracted keywords:", keywords,
+      "subreddits:", subreddits,
+      "paths:", paths
+    );
 
-    await chrome.storage.local.set({ keywords, subreddits });
+    await chrome.storage.local.set({ keywords, subreddits, paths });
     console.log("[MindGate background] Active rules saved to local storage.");
   } else if (listResponse?.result === "Error") {
     console.error("[MindGate background] Daemon returned an error on List:", listResponse.data?.message);
