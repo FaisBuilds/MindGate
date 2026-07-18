@@ -13,44 +13,36 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Block something. Two forms:
-    ///   mindgate add <domain>              — block a whole site (network layer)
-    ///   mindgate add path <domain>/<path>  — block a path prefix on a site (browser layer)
+    /// Block something. Three forms:
+    ///   mindgate add <domain>                 — block a whole site (network layer)
+    ///   mindgate add path <domain>/<path>     — block a path prefix on a site (browser layer)
+    ///   mindgate add keyword <value>          — block any URL/page containing a keyword (browser layer)
     ///
-    /// There is no site-specific command (no `add-subreddit`, etc).
-    /// "path" teaches MindGate about URLs in general, so the same
-    /// mechanism covers reddit.com/r/gaming today and
-    /// youtube.com/shorts or instagram.com/reels tomorrow, with
-    /// nothing new to build.
+    /// There is no site-specific command (no `add-subreddit`, etc), and
+    /// no hyphenated commands (no `add-keyword`, etc) — "path" and
+    /// "keyword" are just the second word after `add`/`remove`.
     ///
     /// Examples:
     ///   mindgate add youtube.com
     ///   mindgate add path reddit.com/r/gaming
-    ///   mindgate add path github.com/trending
+    ///   mindgate add keyword nsfw
     Add {
         /// Either `<domain>`, or the literal `path` followed by
-        /// `<domain>/<path-prefix>` (e.g. `path reddit.com/r/gaming`)
+        /// `<domain>/<path-prefix>`, or the literal `keyword` followed
+        /// by a value (e.g. `path reddit.com/r/gaming`, `keyword nsfw`)
         #[arg(num_args = 1..=2)]
         target: Vec<String>,
     },
-    /// Unblock something. Same two forms as `add`:
+    /// Unblock something. Same forms as `add`:
     ///   mindgate remove <domain>
     ///   mindgate remove path <domain>/<path>
+    ///   mindgate remove keyword <value>
     Remove {
         /// Either `<domain>`, or the literal `path` followed by
-        /// `<domain>/<path-prefix>`
+        /// `<domain>/<path-prefix>`, or the literal `keyword` followed
+        /// by a value
         #[arg(num_args = 1..=2)]
         target: Vec<String>,
-    },
-    /// Block any URL containing a keyword (browser layer)
-    AddKeyword {
-        /// The keyword value to block
-        value: String,
-    },
-    /// Unblock a keyword
-    RemoveKeyword {
-        /// The keyword value to unblock
-        value: String,
     },
     /// List all currently configured rules
     List,
@@ -71,9 +63,14 @@ enum Commands {
         /// e.g. "5min", "4h", "1d", "2w", "6mo", "1y", or "forever"
         duration: String,
     },
-    /// Hidden subcommand used by browser extensions to bridge stdio to the daemon socket
-    #[command(hide = true)]
-    __NativeBridge,
+    /// Hidden subcommand used by browser extensions to bridge stdio to
+    /// the daemon socket. Explicitly named (rather than left to clap's
+    /// default kebab-case rendering of `NativeBridge`) so it's
+    /// "nativebridge", not "native-bridge" — hidden from --help either
+    /// way, but keeps the CLI's surface hyphen-free even for the one
+    /// subcommand a human never types themselves.
+    #[command(name = "nativebridge", hide = true)]
+    NativeBridge,
 }
 
 /// Parses a duration string like "5min", "4h", "1d", "2w", "6mo",
@@ -143,20 +140,25 @@ enum Target {
     /// `mindgate add path reddit.com/r/gaming` — domain-scoped
     /// path-prefix, browser-layer block.
     Path { domain: String, path: String },
+    /// `mindgate add keyword nsfw` — URL/page-content keyword,
+    /// browser-layer block.
+    Keyword(String),
 }
 
 /// Parses the `Vec<String>` collected by clap for `add`/`remove` into
-/// a `Target`. Two shapes are accepted:
-///   [domain]              -> Target::Website
-///   ["path", combined]    -> Target::Path (via split_domain_path)
-/// Anything else (0 args, 2+ args not starting with the literal
-/// "path", 3+ args) is a usage error, reported client-side before any
+/// a `Target`. Three shapes are accepted:
+///   [domain]                 -> Target::Website
+///   ["path", combined]       -> Target::Path (via split_domain_path)
+///   ["keyword", value]       -> Target::Keyword
+/// Anything else (0 args, a bare "path"/"keyword" with nothing after
+/// it, 3+ args) is a usage error, reported client-side before any
 /// socket round trip.
 fn parse_target(args: &[String]) -> Result<Target, String> {
     match args {
         [] => Err(
-            "expected a domain, or `path <domain>/<path>` — e.g. `mindgate add youtube.com` \
-             or `mindgate add path reddit.com/r/gaming`"
+            "expected a domain, `path <domain>/<path>`, or `keyword <value>` — e.g. \
+             `mindgate add youtube.com`, `mindgate add path reddit.com/r/gaming`, or \
+             `mindgate add keyword nsfw`"
                 .to_string(),
         ),
         [only] => {
@@ -166,6 +168,10 @@ fn parse_target(args: &[String]) -> Result<Target, String> {
                      `mindgate add path reddit.com/r/gaming`"
                         .to_string(),
                 )
+            } else if only.eq_ignore_ascii_case("keyword") {
+                Err(
+                    "`keyword` needs a value, e.g. `mindgate add keyword nsfw`".to_string(),
+                )
             } else {
                 Ok(Target::Website(only.trim().to_lowercase()))
             }
@@ -174,9 +180,12 @@ fn parse_target(args: &[String]) -> Result<Target, String> {
             let (domain, path) = split_domain_path(combined)?;
             Ok(Target::Path { domain, path })
         }
+        [literal, value] if literal.eq_ignore_ascii_case("keyword") => {
+            Ok(Target::Keyword(value.clone()))
+        }
         _ => Err(format!(
-            "unrecognized arguments '{}' — usage: `mindgate add <domain>` or \
-             `mindgate add path <domain>/<path>`",
+            "unrecognized arguments '{}' — usage: `mindgate add <domain>`, \
+             `mindgate add path <domain>/<path>`, or `mindgate add keyword <value>`",
             args.join(" ")
         )),
     }
@@ -257,6 +266,24 @@ mod target_parsing_tests {
             }
             _ => panic!("expected Path"),
         }
+    }
+
+    #[test]
+    fn keyword_literal_captures_value() {
+        match parse_target(&["keyword".to_string(), "nsfw".to_string()]).unwrap() {
+            Target::Keyword(value) => assert_eq!(value, "nsfw"),
+            _ => panic!("expected Keyword"),
+        }
+    }
+
+    #[test]
+    fn keyword_literal_is_case_insensitive() {
+        assert!(parse_target(&["KEYWORD".to_string(), "nsfw".to_string()]).is_ok());
+    }
+
+    #[test]
+    fn bare_keyword_literal_with_no_value_is_rejected() {
+        assert!(parse_target(&["keyword".to_string()]).is_err());
     }
 
     #[test]
@@ -367,7 +394,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::__NativeBridge => {
+        Commands::NativeBridge => {
             run_native_bridge().await?;
         }
         Commands::Lock { duration } => {
@@ -425,6 +452,7 @@ async fn main() -> Result<()> {
                 Commands::Add { target } => match parse_target(&target) {
                     Ok(Target::Website(domain)) => Request::AddWebsite { domain },
                     Ok(Target::Path { domain, path }) => Request::AddPath { domain, path },
+                    Ok(Target::Keyword(value)) => Request::AddKeyword { value },
                     Err(msg) => {
                         eprintln!("Error: {msg}");
                         std::process::exit(1);
@@ -433,13 +461,12 @@ async fn main() -> Result<()> {
                 Commands::Remove { target } => match parse_target(&target) {
                     Ok(Target::Website(domain)) => Request::RemoveWebsite { domain },
                     Ok(Target::Path { domain, path }) => Request::RemovePath { domain, path },
+                    Ok(Target::Keyword(value)) => Request::RemoveKeyword { value },
                     Err(msg) => {
                         eprintln!("Error: {msg}");
                         std::process::exit(1);
                     }
                 },
-                Commands::AddKeyword { value } => Request::AddKeyword { value },
-                Commands::RemoveKeyword { value } => Request::RemoveKeyword { value },
                 Commands::List => Request::List,
                 Commands::Status => Request::Status,
                 _ => unreachable!(),

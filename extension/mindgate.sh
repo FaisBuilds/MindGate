@@ -8,4 +8,4 @@ exec 2>>/tmp/mindgate-bridge-error.log
 MINDGATE_SOCKET="/tmp/mindgate-dev/mindgate.sock" \
 MINDGATE_CONFIG_DIR="/tmp/mindgate-dev" \
 MINDGATE_RUN_DIR="/tmp/mindgate-dev" \
-exec /home/faisal/Desktop/MindGate/target/debug/mindgate native-bridge
+exec /home/faisal/Desktop/MindGate/target/debug/mindgate nativebridge
