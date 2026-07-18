@@ -25,7 +25,19 @@ use tokio::net::{UnixListener, UnixStream};
 /// disconnected for `Status` purposes. Not yet wired to the fail-closed
 /// fallback described in CONTEXT.md §5 (that's post-MVP) — for now this
 /// only affects what `mindgate status` reports.
-const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(30);
+///
+/// FIX: this was 30s, matching what `background.js` originally asked
+/// `chrome.alarms` for (`periodInMinutes: 0.5`). But Chrome enforces a
+/// hard 1-minute floor on alarm periods for installed extensions —
+/// asking for 30s doesn't get you 30s, it silently gets clamped to
+/// ~60s (plus scheduling jitter on top of that). So the real heartbeat
+/// cadence was always ~60s+, while this only tolerated a 30s gap —
+/// meaning `mindgate status` was stale (and thus wrongly "NO") for
+/// roughly the back half of every single cycle, sync/extension working
+/// correctly the entire time. 150s gives comfortable headroom over the
+/// real ~60s cadence plus jitter, without being so loose that a truly
+/// dead extension takes minutes to show up as disconnected.
+const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(150);
 
 /// Look up the connecting peer's UID via `SO_PEERCRED`. Returns `None`
 /// if the platform/socket doesn't support it, which callers treat as
@@ -170,67 +182,95 @@ async fn handle_connection(mut stream: UnixStream, state: Arc<AppState>) -> Resu
 
 async fn dispatch(state: &AppState, req: Request) -> Response {
     match req {
+        // --- The ratchet ---
+        //
+        // `add` is ALWAYS allowed, locked or not — you can only ever
+        // tighten a committed ruleset, never loosen it. Before a lock
+        // exists, `add` just stages (writes to rules.toml, nothing
+        // enforced — that's what `mindgate lock` activates). Once
+        // locked, `add` still writes to rules.toml, but for a website
+        // it now ALSO calls `engine.apply()` immediately, so the new
+        // block takes effect right away rather than waiting for
+        // another `lock` call that (deliberately) can't happen again.
+        // Keyword/subreddit adds while locked don't need an explicit
+        // apply step — the extension already treats "locked" as "sync
+        // and enforce," so a newly staged keyword just gets picked up
+        // on its next periodic sync.
+        //
+        // `remove` is the actual commitment mechanism: rejected
+        // outright whenever `lock::effective_locked` is true. There's
+        // deliberately no `unlock` — a lock clears itself only once
+        // its timer naturally expires, or never, for `lock forever`.
         Request::AddWebsite { domain } => {
             let mut rules = state.rules.lock().await;
             if !rules.websites.iter().any(|w| w.domain == domain) {
                 rules.websites.push(mindgate_common::WebsiteRule { domain });
             }
-            persist_and_apply(state, &rules).await
+            add_and_maybe_apply(state, &rules).await
         }
         Request::RemoveWebsite { domain } => {
+            if let Some(resp) = reject_if_locked(state).await {
+                return resp;
+            }
             let mut rules = state.rules.lock().await;
             rules.websites.retain(|w| w.domain != domain);
-            persist_and_apply(state, &rules).await
+            persist_only(&rules).await
         }
         Request::AddKeyword { value } => {
             let mut rules = state.rules.lock().await;
             if !rules.keywords.iter().any(|k| k.value == value) {
                 rules.keywords.push(mindgate_common::KeywordRule { value });
             }
-            persist_only(state, &rules).await
+            persist_only(&rules).await
         }
         Request::RemoveKeyword { value } => {
+            if let Some(resp) = reject_if_locked(state).await {
+                return resp;
+            }
             let mut rules = state.rules.lock().await;
             rules.keywords.retain(|k| k.value != value);
-            persist_only(state, &rules).await
+            persist_only(&rules).await
         }
         Request::AddSubreddit { subreddit } => {
             let mut rules = state.rules.lock().await;
             if !rules.subreddits.iter().any(|s| s.subreddit == subreddit) {
                 rules.subreddits.push(mindgate_common::SubredditRule { subreddit });
             }
-            persist_only(state, &rules).await
+            persist_only(&rules).await
         }
         Request::RemoveSubreddit { subreddit } => {
+            if let Some(resp) = reject_if_locked(state).await {
+                return resp;
+            }
             let mut rules = state.rules.lock().await;
             rules.subreddits.retain(|s| s.subreddit != subreddit);
-            persist_only(state, &rules).await
+            persist_only(&rules).await
         }
         Request::List => {
             let rules = state.rules.lock().await;
             Response::Rules(rules.clone())
         }
         Request::Status => build_status(state).await,
+
+        // --- The one and only activation path ---
         Request::Lock { duration_secs, password } => {
-            // Setting a lock never requires a password (you're choosing to
-            // restrict your future self); it's *unlocking* that checks one.
+            // No unlock exists in this design, so a password on a lock
+            // request is meaningless — accepted for wire compatibility,
+            // ignored otherwise.
             let _ = password;
-            let mut lock_state = state.lock.lock().await;
-            lock::lock(&mut lock_state, duration_secs, duration_secs.is_none());
-            Response::Ok
+            lock_ruleset(state, duration_secs).await
         }
-        Request::Unlock { password } => {
-            let hash_path = mindgate_common::password_hash_path();
-            match lock::verify_password(&hash_path, password.as_deref()).await {
-                Ok(true) => {
-                    let mut lock_state = state.lock.lock().await;
-                    lock::clear(&mut lock_state);
-                    Response::Ok
-                }
-                Ok(false) => Response::Error { message: "incorrect password".into() },
-                Err(e) => Response::Error { message: format!("unlock failed: {e:#}") },
-            }
-        }
+
+        // Not exposed by the CLI (there is intentionally no `unlock`
+        // command), but left wired at the protocol level rather than
+        // removed outright — harmless to keep, and avoids a breaking
+        // wire-format change for a variant that costs nothing sitting
+        // unused. Any client that does send this gets a clear rejection
+        // rather than a confusing runtime error.
+        Request::Unlock { .. } => Response::Error {
+            message: "unlock is not supported — a lock clears itself only when its timer expires".into(),
+        },
+
         Request::ExtensionHeartbeat => {
             *state.last_heartbeat.lock().await = Some(Instant::now());
             Response::Ok
@@ -238,21 +278,124 @@ async fn dispatch(state: &AppState, req: Request) -> Response {
     }
 }
 
-async fn persist_and_apply(state: &AppState, rules: &mindgate_common::RuleSet) -> Response {
+/// The ratchet's "add" half. Always persists the (already-mutated)
+/// ruleset to disk — staging is never blocked by lock state. If the
+/// ruleset is *currently* locked, this ALSO calls `engine.apply()`
+/// immediately, so a website added mid-lock takes effect right away
+/// instead of silently waiting for a `lock` call that can't happen
+/// again (there's no re-lock while already locked — see
+/// `lock_ruleset`'s own guard).
+///
+/// Only called from `Request::AddWebsite`. Keyword/subreddit adds
+/// don't need this — they go through `persist_only` directly, because
+/// the extension itself re-syncs and re-enforces on every periodic
+/// poll while locked (see `background.js`'s `syncRules`), so a newly
+/// staged keyword gets picked up on its own without an explicit apply
+/// step here.
+///
+/// Deliberately fail-visible, matching `lock_ruleset`'s own posture:
+/// if `engine.apply()` fails while locked, we report that error rather
+/// than silently pretending the add succeeded — the caller needs to
+/// know the new site is staged but NOT yet actually blocked.
+async fn add_and_maybe_apply(state: &AppState, rules: &mindgate_common::RuleSet) -> Response {
     if let Err(e) = crate::store::save(rules).await {
         return Response::Error { message: format!("failed to save rules: {e:#}") };
     }
-    if let Err(e) = state.engine.apply(rules, &state.resolver_config_path).await {
-        return Response::Error { message: format!("failed to apply rules: {e:#}") };
+
+    let locked = {
+        let lock_state = state.lock.lock().await;
+        lock::effective_locked(&lock_state)
+    };
+
+    if locked {
+        if let Err(e) = state.engine.apply(rules, &state.resolver_config_path).await {
+            return Response::Error {
+                message: format!(
+                    "site staged and saved, but failed to apply enforcement while \
+                     locked: {e:#} — it will not be blocked until this is resolved"
+                ),
+            };
+        }
     }
+
     Response::Ok
 }
 
-/// Same as `persist_and_apply` but skips re-running the network engine
-/// — used for keyword/subreddit changes, which the extension enforces,
-/// not nftables. Still persists to disk so a daemon restart doesn't
-/// lose them.
-async fn persist_only(_state: &AppState, rules: &mindgate_common::RuleSet) -> Response {
+/// Returns `Some(Response::Error{..})` if the ruleset is currently
+/// locked (using `lock::effective_locked`, which correctly treats an
+/// expired timed lock as unlocked even if the on-disk flag hasn't
+/// been proactively cleared), or `None` if the caller should proceed.
+async fn reject_if_locked(state: &AppState) -> Option<Response> {
+    let lock_state = state.lock.lock().await;
+    if lock::effective_locked(&lock_state) {
+        let detail = match lock_state.unlock_at {
+            Some(unlock_at) => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                format!("locked for {} more second(s)", unlock_at.saturating_sub(now))
+            }
+            None => "locked forever".to_string(),
+        };
+        Some(Response::Error {
+            message: format!("ruleset is {detail} — cannot modify while locked"),
+        })
+    } else {
+        None
+    }
+}
+
+/// The only place `engine.apply()` is ever called after startup.
+/// Deliberately fail-closed: enforcement is attempted FIRST, and the
+/// lock is only recorded (in memory + on disk) if it actually
+/// succeeds. This guarantees "the ruleset reports locked" always
+/// means "enforcement is actually active" — never a state where the
+/// CLI claims success but nothing is really blocked.
+async fn lock_ruleset(state: &AppState, duration_secs: Option<u64>) -> Response {
+    {
+        let lock_state = state.lock.lock().await;
+        if lock::effective_locked(&lock_state) {
+            return Response::Error {
+                message: "ruleset is already locked — wait for it to expire".into(),
+            };
+        }
+    }
+
+    let rules = state.rules.lock().await;
+    if let Err(e) = state.engine.apply(&rules, &state.resolver_config_path).await {
+        return Response::Error { message: format!("failed to apply rules: {e:#}") };
+    }
+    drop(rules);
+
+    let mut lock_state = state.lock.lock().await;
+    // password_required is vestigial now that there's no unlock path
+    // — always false. Kept as a field on LockState rather than
+    // removed, since Status/StatusInfo still expose it and removing it
+    // would be a wire-format change for no functional gain.
+    lock::lock(&mut lock_state, duration_secs, false);
+
+    if let Err(e) = crate::store::save_lock(&lock_state).await {
+        // Enforcement is already active at this point (engine.apply
+        // succeeded above) but we couldn't persist the lock record —
+        // surface this loudly rather than silently: a restart right
+        // now would come back up unlocked despite nft/dnsmasq still
+        // reflecting a locked ruleset until the next apply.
+        return Response::Error {
+            message: format!(
+                "enforcement is active but failed to persist lock state: {e:#} — \
+                 a daemon restart before this is fixed will NOT preserve the lock"
+            ),
+        };
+    }
+
+    Response::Ok
+}
+
+/// Persist the ruleset to disk. This is now the ONLY thing `add`/
+/// `remove` requests do — no `engine.apply()` call, ever. See the
+/// module-level split described in `dispatch`'s doc comment above.
+async fn persist_only(rules: &mindgate_common::RuleSet) -> Response {
     match crate::store::save(rules).await {
         Ok(()) => Response::Ok,
         Err(e) => Response::Error { message: format!("failed to save rules: {e:#}") },
@@ -266,6 +409,14 @@ async fn build_status(state: &AppState) -> Response {
     let extension_connected =
         last_heartbeat.map(|t| t.elapsed() < HEARTBEAT_TIMEOUT).unwrap_or(false);
 
+    // Report EFFECTIVE lock status, not the raw on-disk flag — a timed
+    // lock whose timer has already passed should read as unlocked here
+    // even if nothing has proactively cleared `.locked` yet. This is
+    // also what the extension relies on (via a Status check) to decide
+    // whether to actually enforce its synced keyword/subreddit rules.
+    let mut reported_lock = lock_state.clone();
+    reported_lock.locked = lock::effective_locked(&lock_state);
+
     Response::Status(StatusInfo {
         daemon_running: true,
         nft_table_active: state.engine.nft_available().await,
@@ -274,6 +425,6 @@ async fn build_status(state: &AppState) -> Response {
         keyword_count: rules.keywords.len(),
         subreddit_count: rules.subreddits.len(),
         extension_connected,
-        lock: lock_state.clone(),
+        lock: reported_lock,
     })
 }

@@ -47,9 +47,152 @@ enum Commands {
     List,
     /// View detailed daemon engine status and ruleset metrics
     Status,
+    /// Commit the current ruleset and activate enforcement. THIS
+    /// CANNOT BE UNDONE EARLY — there is no unlock command. The
+    /// ruleset stays frozen until the duration elapses.
+    ///
+    /// DURATION examples: 5min, 4h, 1d, 2w, 6mo, 1y, or `forever`.
+    ///   min = minutes (1-1440)      — mainly for dev/testing
+    ///   h   = hours   (1-168)
+    ///   d   = days    (1-365)
+    ///   w   = weeks   (1-52)
+    ///   mo  = months  (1-12)
+    ///   y   = years   (1-10)
+    Lock {
+        /// e.g. "5min", "4h", "1d", "2w", "6mo", "1y", or "forever"
+        duration: String,
+    },
     /// Hidden subcommand used by browser extensions to bridge stdio to the daemon socket
     #[command(hide = true)]
     __NativeBridge,
+}
+
+/// Parses a duration string like "5min", "4h", "1d", "2w", "6mo",
+/// "1y", or the literal "forever" into seconds. `None` return value
+/// means "forever" (no timer — matches `Request::Lock`'s
+/// `duration_secs: Option<u64>`, where `None` already means untimed).
+/// Every unit has an explicit range; out-of-range or unrecognized
+/// input is rejected here, client-side, before it ever reaches the
+/// daemon — there's no reason to round-trip a socket call for input
+/// that's already obviously invalid.
+///
+/// NOTE: months is `mo`, not `m` — `m` was ambiguous with minutes.
+/// If you have scripts using the old `6m` = "6 months" form, update
+/// them to `6mo`.
+fn parse_duration(input: &str) -> Result<Option<u64>, String> {
+    let trimmed = input.trim();
+    if trimmed.eq_ignore_ascii_case("forever") {
+        return Ok(None);
+    }
+
+    let (num_str, unit) = trimmed.split_at(
+        trimmed
+            .find(|c: char| !c.is_ascii_digit())
+            .ok_or_else(|| format!("'{trimmed}' is missing a unit (e.g. 5min, 4h, 1d, 2w, 6mo, 1y)"))?,
+    );
+
+    let n: u64 = num_str
+        .parse()
+        .map_err(|_| format!("'{num_str}' isn't a valid number"))?;
+
+    if n == 0 {
+        return Err("duration must be at least 1".to_string());
+    }
+
+    const MINUTE: u64 = 60;
+    const HOUR: u64 = 3600;
+    const DAY: u64 = 24 * HOUR;
+    const WEEK: u64 = 7 * DAY;
+    const MONTH: u64 = 30 * DAY;
+    const YEAR: u64 = 365 * DAY;
+
+    let (seconds, max, unit_name) = match unit {
+        "min" => (n * MINUTE, 1440, "minutes"),
+        "h" => (n * HOUR, 168, "hours"),
+        "d" => (n * DAY, 365, "days"),
+        "w" => (n * WEEK, 52, "weeks"),
+        "mo" => (n * MONTH, 12, "months"),
+        "y" => (n * YEAR, 10, "years"),
+        other => {
+            return Err(format!(
+                "unrecognized unit '{other}' — use min, h, d, w, mo, y, or the word 'forever'"
+            ))
+        }
+    };
+
+    if n > max {
+        return Err(format!("{n}{unit} is out of range — max is {max} {unit_name}"));
+    }
+
+    Ok(Some(seconds))
+}
+
+fn format_duration_human(input: &str, seconds: Option<u64>) -> String {
+    match seconds {
+        None => "forever".to_string(),
+        Some(_) => input.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod duration_tests {
+    use super::*;
+
+    #[test]
+    fn parses_minutes() {
+        assert_eq!(parse_duration("5min"), Ok(Some(300)));
+    }
+
+    #[test]
+    fn parses_hours() {
+        assert_eq!(parse_duration("4h"), Ok(Some(4 * 3600)));
+    }
+
+    #[test]
+    fn parses_months_as_mo_not_m() {
+        assert_eq!(parse_duration("6mo"), Ok(Some(6 * 30 * 86400)));
+    }
+
+    #[test]
+    fn old_bare_m_unit_is_now_rejected() {
+        // Regression guard: `m` used to mean months, which collided
+        // with the intuitive reading of `m` as minutes. It must now
+        // be rejected outright rather than silently reinterpreted.
+        assert!(parse_duration("6m").is_err());
+    }
+
+    #[test]
+    fn seconds_unit_is_not_supported() {
+        // Explicitly not supported — minutes is the shortest unit.
+        assert!(parse_duration("30s").is_err());
+    }
+
+    #[test]
+    fn parses_forever() {
+        assert_eq!(parse_duration("forever"), Ok(None));
+        assert_eq!(parse_duration("FOREVER"), Ok(None));
+    }
+
+    #[test]
+    fn rejects_zero() {
+        assert!(parse_duration("0min").is_err());
+    }
+
+    #[test]
+    fn rejects_out_of_range() {
+        assert!(parse_duration("2000min").is_err()); // max is 1440
+        assert!(parse_duration("999h").is_err()); // max is 168
+    }
+
+    #[test]
+    fn rejects_unknown_unit() {
+        assert!(parse_duration("5x").is_err());
+    }
+
+    #[test]
+    fn rejects_missing_unit() {
+        assert!(parse_duration("5").is_err());
+    }
 }
 
 #[tokio::main]
@@ -59,6 +202,56 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::__NativeBridge => {
             run_native_bridge().await?;
+        }
+        Commands::Lock { duration } => {
+            let duration_secs = match parse_duration(&duration) {
+                Ok(d) => d,
+                Err(msg) => {
+                    eprintln!("Error: {msg}");
+                    std::process::exit(1);
+                }
+            };
+
+            if duration_secs.is_none() {
+                // `forever` has no timer and no unlock command — this
+                // is the one place in the whole CLI where we slow the
+                // user down on purpose rather than just doing the
+                // thing. Three separate, distinctly-worded
+                // confirmations, not one dialog with a checkbox: each
+                // one has to be actively re-read and re-typed, which
+                // is the point — friction here is intentional, matching
+                // MindGate's own stated philosophy, not an oversight.
+                if !confirm(
+                    "⚠️  You are about to lock your ruleset FOREVER. \
+                     There is no unlock command. Continue? [y/N] ",
+                )? {
+                    println!("Cancelled.");
+                    return Ok(());
+                }
+                if !confirm(
+                    "⚠️  This is permanent. The only way out is deleting \
+                     and reinstalling MindGate. Are you sure? [y/N] ",
+                )? {
+                    println!("Cancelled.");
+                    return Ok(());
+                }
+                if !confirm(
+                    "⚠️  Last chance. Type y to lock this ruleset forever, \
+                     with no way back: [y/N] ",
+                )? {
+                    println!("Cancelled.");
+                    return Ok(());
+                }
+            }
+
+            let req = Request::Lock { duration_secs, password: None };
+            match send_request_and_print_lock(req, &duration, duration_secs).await {
+                Ok(()) => {}
+                Err(e) => {
+                    eprintln!("Error: {e:#}");
+                    std::process::exit(1);
+                }
+            }
         }
         cmd => {
             let req = match cmd {
@@ -80,6 +273,63 @@ async fn main() -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+/// Prompts `prompt` and reads a line from stdin, returning true only
+/// for an explicit "y" or "yes" (case-insensitive). Anything else —
+/// including just pressing Enter — is a no, matching the `[y/N]`
+/// convention shown in the prompt text.
+fn confirm(prompt: &str) -> Result<bool> {
+    use std::io::Write;
+    print!("{prompt}");
+    std::io::stdout().flush().ok();
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    let answer = line.trim().to_ascii_lowercase();
+    Ok(answer == "y" || answer == "yes")
+}
+
+/// Same wire round-trip as `send_request_and_print`, but with a
+/// success message specific to locking, since "✓ Operation succeeded."
+/// doesn't convey what actually just happened (enforcement activating,
+/// permanently or for a set duration) the way it should for the one
+/// command in this CLI that can't be undone.
+async fn send_request_and_print_lock(
+    req: Request,
+    duration_input: &str,
+    duration_secs: Option<u64>,
+) -> Result<()> {
+    let path = socket_path();
+    let mut stream = UnixStream::connect(&path)
+        .await
+        .with_context(|| format!("Could not connect to daemon at {}", path.display()))?;
+
+    let payload = wire::encode(&req)?;
+    stream.write_all(&payload).await?;
+
+    let mut len_buf = [0u8; 4];
+    stream.read_exact(&mut len_buf).await?;
+    let len = u32::from_be_bytes(len_buf) as usize;
+    let mut body = vec![0u8; len];
+    stream.read_exact(&mut body).await?;
+
+    let response: Response = wire::decode(&body)?;
+    match response {
+        Response::Ok => {
+            println!(
+                "🔒 Locked — {}. Enforcement is now active. This cannot be undone early.",
+                format_duration_human(duration_input, duration_secs)
+            );
+        }
+        Response::Error { message } => anyhow::bail!("{message}"),
+        other => {
+            // Lock only ever responds Ok/Error server-side, but handle
+            // the rest rather than silently dropping them if that
+            // changes later.
+            println!("{other:?}");
+        }
+    }
     Ok(())
 }
 
@@ -149,12 +399,40 @@ async fn send_request_and_print(req: Request) -> Result<()> {
     Ok(())
 }
 
+fn format_seconds_human(seconds: u64) -> String {
+    let days = seconds / 86400;
+    let hours = (seconds % 86400) / 3600;
+    let minutes = (seconds % 3600) / 60;
+    if days > 0 {
+        format!("{days}d {hours}h")
+    } else if hours > 0 {
+        format!("{hours}h {minutes}m")
+    } else {
+        format!("{minutes}m")
+    }
+}
+
 fn print_status_info(status: StatusInfo) {
     println!("--- MindGate Daemon Status ---");
     println!("Daemon Running:       {}", if status.daemon_running { "YES" } else { "NO" });
     println!("nftables Active:      {}", if status.nft_table_active { "YES" } else { "NO (Dry-run mode active)" });
     println!("Extension Connected:  {}", if status.extension_connected { "YES" } else { "NO (Check browser background)" });
-    println!("Active Locks:         {}", if status.lock.locked { "YES" } else { "NO" });
+    let lock_detail = if !status.lock.locked {
+        "NO".to_string()
+    } else {
+        match status.lock.unlock_at {
+            Some(unlock_at) => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let remaining = unlock_at.saturating_sub(now);
+                format!("YES ({} remaining)", format_seconds_human(remaining))
+            }
+            None => "YES (forever — no unlock)".to_string(),
+        }
+    };
+    println!("Active Locks:         {lock_detail}");
     println!("\n[Metrics]");
     println!("Total Rules:          {}", status.rule_count);
     println!("  - Websites:         {}", status.website_count);

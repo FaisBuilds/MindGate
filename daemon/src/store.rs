@@ -6,7 +6,7 @@
 //! touch `rules.toml`. Neither reaches into the other's territory.
 
 use anyhow::{Context, Result};
-use mindgate_common::{rules_path, RuleSet};
+use mindgate_common::{lock_state_path, rules_path, LockState, RuleSet};
 use tokio::fs;
 
 /// Load the rule set from disk. A missing file is not an error — it
@@ -35,6 +35,45 @@ pub async fn save(rules: &RuleSet) -> Result<()> {
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
     let toml_str = toml::to_string_pretty(rules).context("failed to serialize rules")?;
+    fs::write(&path, toml_str)
+        .await
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(())
+}
+
+/// Load the persisted lock state from disk. A missing file means the
+/// ruleset has never been locked — returns `LockState::default()`
+/// (unlocked), same "missing is not an error" reasoning as `load()`.
+///
+/// Before this existed, the daemon always started with
+/// `LockState::default()` regardless of what was on disk, which meant
+/// `mindgate lock forever` silently un-locked itself on the next
+/// crash or restart. That's the bug this function (and `save_lock`)
+/// closes.
+pub async fn load_lock() -> Result<LockState> {
+    let path = lock_state_path();
+    match fs::read_to_string(&path).await {
+        Ok(contents) => toml::from_str(&contents)
+            .with_context(|| format!("failed to parse {}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(LockState::default()),
+        Err(e) => Err(e).with_context(|| format!("failed to read {}", path.display())),
+    }
+}
+
+/// Persist the current lock state to disk. Called once, at the moment
+/// `mindgate lock` succeeds — see `server.rs`'s `Request::Lock`
+/// handler. Deliberately NOT called on every mutation the way
+/// `save()` (rules) is, since lock state only ever changes at that
+/// one moment (there's no unlock path to save from the other
+/// direction).
+pub async fn save_lock(state: &LockState) -> Result<()> {
+    let path = lock_state_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let toml_str = toml::to_string_pretty(state).context("failed to serialize lock state")?;
     fs::write(&path, toml_str)
         .await
         .with_context(|| format!("failed to write {}", path.display()))?;
@@ -98,6 +137,34 @@ mod tests {
 
         std::env::remove_var("MINDGATE_CONFIG_DIR");
     }
+
+    #[tokio::test]
+    async fn lock_state_round_trips_through_disk() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = TempDir::new("lock-roundtrip");
+        std::env::set_var("MINDGATE_CONFIG_DIR", dir.path());
+
+        let mut lock = LockState::default();
+        lock.locked = true;
+        lock.unlock_at = Some(9_999_999_999);
+        save_lock(&lock).await.unwrap();
+
+        let loaded = load_lock().await.unwrap();
+        assert!(loaded.locked);
+        assert_eq!(loaded.unlock_at, Some(9_999_999_999));
+
+        std::env::remove_var("MINDGATE_CONFIG_DIR");
+    }
+
+    #[tokio::test]
+    async fn missing_lock_file_returns_unlocked_default() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = TempDir::new("lock-missing");
+        std::env::set_var("MINDGATE_CONFIG_DIR", dir.path());
+
+        let loaded = load_lock().await.unwrap();
+        assert!(!loaded.locked);
+
+        std::env::remove_var("MINDGATE_CONFIG_DIR");
+    }
 }
-
-

@@ -155,6 +155,16 @@ pub fn password_hash_path() -> PathBuf {
     config_dir().join("password.hash")
 }
 
+/// Where the current `LockState` is persisted. Separate file from
+/// `rules.toml` rather than a field on `RuleSet`, since the two have
+/// different lifecycles: rules can be freely staged/edited pre-lock,
+/// while lock state represents a one-way commitment. Keeping them in
+/// separate files makes it possible to reason about (and back up/
+/// inspect) each independently.
+pub fn lock_state_path() -> PathBuf {
+    config_dir().join("lock.toml")
+}
+
 /// Length-prefixed JSON framing shared by both ends of the socket:
 /// a 4-byte big-endian length, then that many bytes of JSON. This is
 /// deliberately the same shape as the browser native-messaging

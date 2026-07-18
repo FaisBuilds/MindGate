@@ -125,6 +125,10 @@ sudo -E target/debug/mindgate status                   # daemon health + extensi
 sudo nft flush ruleset && sudo systemctl restart NetworkManager
 ```
 
+**Reset Settings** 
+
+sudo rm -f "$MINDGATE_CONFIG_DIR/rules.toml" "$MINDGATE_CONFIG_DIR/lock.toml" "$MINDGATE_CONFIG_DIR/password.hash"
+
 ---
 
 ## ✧ Testing on your own machine

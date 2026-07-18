@@ -45,26 +45,27 @@
   });
 
   // Replaces the webpage content with a clean MindGate blocked screen
+  // Theme: baby pink / white, matching the product's block-page identity (CONTEXT.md §5)
   function blockPage(reason) {
     window.stop(); // Stop any remaining page assets from loading
-    
+
     const blockHtml = `
       <div style="
         position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
-        background: #0f172a; color: #f8fafc; font-family: system-ui, sans-serif;
+        background: #fff0f5; color: #4a2c3a; font-family: system-ui, sans-serif;
         display: flex; flex-direction: column; align-items: center; justify-content: center;
         z-index: 2147483647; text-align: center; box-sizing: border-box; padding: 20px;
       ">
-        <div style="max-width: 500px; background: #1e293b; padding: 40px; border-radius: 12px; border: 1px solid #334155; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3);">
-          <span style="font-size: 48px;">🛡️</span>
-          <h1 style="font-size: 24px; margin-top: 16px; margin-bottom: 8px; font-weight: 700;">Access Blocked by MindGate</h1>
-          <p style="color: #94a3b8; font-size: 14px; margin-bottom: 24px; line-height: 1.5;">${reason}</p>
-          <div style="height: 1px; background: #334155; margin-bottom: 24px;"></div>
+        <div style="max-width: 500px; background: #ffffff; padding: 40px; border-radius: 16px; border: 1px solid #f7c5d8; box-shadow: 0 10px 25px -5px rgba(244, 114, 182, 0.25);">
+          <span style="font-size: 48px;">🌸</span>
+          <h1 style="font-size: 24px; margin-top: 16px; margin-bottom: 8px; font-weight: 700; color: #d6336c;">Access Blocked by MindGate</h1>
+          <p style="color: #a15b76; font-size: 14px; margin-bottom: 24px; line-height: 1.5;">${reason}</p>
+          <div style="height: 1px; background: #f7c5d8; margin-bottom: 24px;"></div>
           <button onclick="window.history.back()" style="
-            background: #3b82f6; color: white; border: none; padding: 10px 20px;
-            font-size: 14px; font-weight: 600; border-radius: 6px; cursor: pointer;
+            background: #f472b6; color: white; border: none; padding: 10px 24px;
+            font-size: 14px; font-weight: 600; border-radius: 8px; cursor: pointer;
             transition: background 0.2s;
-          " onmouseover="this.style.background='#2563eb'" onmouseout="this.style.background='#3b82f6'">
+          " onmouseover="this.style.background='#ec4899'" onmouseout="this.style.background='#f472b6'">
             Go Back
           </button>
         </div>

@@ -20,10 +20,14 @@
 //!   2. `nft` redirects all outbound port 53 traffic to that local
 //!      resolver, and drops outbound port 853 (DNS-over-TLS), so
 //!      nothing can route around step 1.
-//!   3. Blocked domains are also resolved to IPs and mirrored into an
-//!      nftables set that drops matching traffic outright — this is
-//!      what survives CDN IP rotation and catches anything that still
-//!      has a stale/cached resolution.
+//!   3. REMOVED (was IP-level blocking): blocked domains used to also
+//!      be resolved and mirrored into an nftables set that dropped
+//!      matching traffic by IP, as defense-in-depth. Cut because many
+//!      domains share IPs with unrelated sites behind the same CDN
+//!      (Cloudflare, Fastly, GitHub Pages, etc.), so blocking "the IP
+//!      behind reddit.com" could take down completely unrelated sites
+//!      sharing that address. DNS-layer blackholing (step 1) is now
+//!      the only enforcement mechanism for whole-domain blocks.
 //!
 //! ## Orphaned-resolver self-healing (added after a real outage)
 //!
@@ -83,8 +87,6 @@
 
 use anyhow::{Context, Result};
 use mindgate_common::{RuleSet, WebsiteRule};
-use std::collections::BTreeSet;
-use std::net::{IpAddr, ToSocketAddrs};
 use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::io::AsyncWriteExt;
@@ -135,6 +137,22 @@ const UPSTREAM_RESOLVER: &str = "1.1.1.1";
 /// process exit, which `try_wait()` can then observe.
 const RESOLVER_LIVENESS_CHECK_DELAY_MS: u64 = 150;
 
+/// Loopback address blocked domains resolve to, instead of NXDOMAIN.
+/// Plain HTTP requests to a blocked domain land here and get served
+/// REVERTED: this file previously redirected blocked domains to a
+/// local loopback HTTP server on port 80 (`address=/domain/127.0.0.1`
+/// + `spawn_block_page_server`) to show a themed block page instead of
+/// the browser's bare error. That change is what caused
+/// DNS_PROBE_FINISHED_NO_INTERNET / "all subdomains blocked": binding
+/// port 80 competes with anything else on the box already listening
+/// there, and — separately from that — `address=/domain/IP` matches
+/// every subdomain of a blocked domain exactly the same way
+/// `server=/domain/` does, so the whole subtree got silently routed
+/// into a fragile extra process instead of a plain NXDOMAIN. Back to
+/// the blackhole-only approach below; no block-page server, no port
+/// 80, no loopback redirect. A themed block page is a real feature to
+/// revisit later, but not by making DNS resolution depend on a second
+/// service binding a privileged port.
 pub struct NftEngine {
     nft_binary: PathBuf,
     dnsmasq_binary: PathBuf,
@@ -299,86 +317,32 @@ impl NftEngine {
         }
     }
 
-    /// Resolve every website domain to its current IP set, so we can
-    /// block by IP as well as by name (defense-in-depth against stale
-    /// caches, direct-IP access, or a client bypassing our resolver
-    /// redirect some other way).
+    /// Pure function: render the nft script for the DoT (port 853)
+    /// drop. Kept separate from `apply()` so it's unit-testable
+    /// without a real `nft` binary.
     ///
-    /// Known, accepted limitation (documented, not hidden — see
-    /// CONTEXT.md §4): this goes through whatever resolver the daemon's
-    /// own libc is configured with, which may itself end up being our
-    /// redirected loopback resolver once the nft rules are active.
-    /// That's fine for MVP1; it just means re-resolution happens
-    /// through the same blackhole-aware resolver we configured.
-    pub async fn resolve_all(domains: &[WebsiteRule]) -> BTreeSet<IpAddr> {
-        let mut ips = BTreeSet::new();
-        for rule in domains {
-            let host = rule.domain.clone();
-            let resolved = tokio::task::spawn_blocking(move || {
-                (host.as_str(), 443u16)
-                    .to_socket_addrs()
-                    .map(|it| it.map(|sa| sa.ip()).collect::<Vec<_>>())
-                    .unwrap_or_default()
-            })
-            .await
-            .unwrap_or_default();
-            ips.extend(resolved);
-        }
-        ips
-    }
-
-    /// Pure function: given a resolved IP set, render the nft script
-    /// for whole-domain IP blocking + the DoT (port 853) drop. Kept
-    /// separate from `apply()` so it's unit-testable without a real
-    /// `nft` binary.
-    pub fn render_filter_script(ips: &BTreeSet<IpAddr>) -> String {
-        let v4: Vec<String> =
-            ips.iter().filter(|ip| ip.is_ipv4()).map(|ip| ip.to_string()).collect();
-        let v6: Vec<String> =
-            ips.iter().filter(|ip| ip.is_ipv6()).map(|ip| ip.to_string()).collect();
-
-        // nft rejects an explicit-but-empty `elements = {  }` line as a
-        // syntax error — an empty set must simply omit the elements line
-        // altogether (the set still exists, just starts with nothing in
-        // it). So only emit `elements = { ... }` when there's at least
-        // one address; a `flags interval;`-only set block is valid nft
-        // and is exactly what you get on the very first `apply()` before
-        // any domain has resolved to anything, or if a domain resolves
-        // to only one address family.
-        let v4_elements = if v4.is_empty() {
-            String::new()
-        } else {
-            format!("        elements = {{ {} }}\n", v4.join(", "))
-        };
-        let v6_elements = if v6.is_empty() {
-            String::new()
-        } else {
-            format!("        elements = {{ {} }}\n", v6.join(", "))
-        };
-
+    /// REMOVED: this used to also take a resolved `BTreeSet<IpAddr>`
+    /// and firewall-drop each one (`blocked_v4`/`blocked_v6` sets),
+    /// as defense-in-depth against stale DNS caches / direct-IP
+    /// access. Cut because it was the actual cause of unrelated sites
+    /// breaking: many blocked domains resolve to shared CDN IPs
+    /// (Cloudflare, Fastly, GitHub Pages, etc.), so dropping "the IP
+    /// behind reddit.com" could also drop every other site sitting on
+    /// that same shared address. The DNS-layer NXDOMAIN blackhole in
+    /// `render_resolver_config` below is the enforcement mechanism now
+    /// — no per-IP blocking, no collateral damage to unrelated
+    /// domains. `resolve_all` is gone along with it since nothing else
+    /// used the resolved IP set.
+    pub fn render_filter_script() -> String {
         format!(
             r#"table inet {table} {{
-    set blocked_v4 {{
-        type ipv4_addr;
-        flags interval;
-{v4_elements}    }}
-
-    set blocked_v6 {{
-        type ipv6_addr;
-        flags interval;
-{v6_elements}    }}
-
     chain output {{
         type filter hook output priority 0; policy accept;
-        ip daddr @blocked_v4 counter drop
-        ip6 daddr @blocked_v6 counter drop
         tcp dport 853 counter drop
     }}
 }}
 "#,
             table = FILTER_TABLE,
-            v4_elements = v4_elements,
-            v6_elements = v6_elements,
         )
     }
 
@@ -591,43 +555,25 @@ impl NftEngine {
         Ok(())
     }
 
-    /// Apply the full rule set: local resolver, DNS redirect + DoT
-    /// block, and IP-level website blocking. This is the single
-    /// entry point `server.rs` calls after every mutation.
+    /// Apply the full rule set: local resolver (NXDOMAIN blackhole for
+    /// blocked domains + the Firefox DoH canary) and the DNS redirect +
+    /// DoT block. This is the single entry point `server.rs` calls
+    /// after every mutation.
     ///
-    /// Order matters here in a way that isn't obvious: `resolve_all`
-    /// MUST run before `apply_resolver` reconfigures dnsmasq to
-    /// blackhole these same domains. Found the hard way — if the
-    /// blackhole config goes in first, our own lookup of "what IP is
-    /// example.com" gets asked to the very resolver we just told to
-    /// refuse to answer that question, so it always comes back with
-    /// zero addresses. Resolving first (while the domain is still
-    /// answerable through whatever resolver was active before this
-    /// apply cycle) gets us a real address to put in the IP-level
-    /// block set; only then do we blackhole the domain at the DNS
-    /// layer, which is the primary block anyway — the IP set is
-    /// defense-in-depth, not the main mechanism.
+    /// No IP-level blocking and no block-page server here anymore —
+    /// see the doc comments on `render_filter_script` and the
+    /// module-level note near `NftEngine`'s definition for why both
+    /// were cut. DNS blackhole is the enforcement mechanism; nothing
+    /// else touches individual IPs, so there's no shared-CDN-IP
+    /// collateral damage to unrelated sites.
     ///
-    /// Known remaining limitation, not fixed by this reordering: once
-    /// a domain has been through one `apply()` cycle, it IS blackholed
-    /// by the currently-running dnsmasq from then on. A future re-add
-    /// of the same domain, or a periodic re-resolve (CONTEXT.md §4
-    /// point 5 — not yet implemented as a running loop in this file),
-    /// would hit this exact problem again, since by then our own
-    /// resolver is already refusing to answer. The permanent fix is
-    /// resolving directly against `UPSTREAM_RESOLVER`, bypassing
-    /// whatever the system's default resolver happens to be — not yet
-    /// implemented; `resolve_all` still uses the system resolver via
-    /// `to_socket_addrs()`.
-    ///
-    /// If `apply_resolver` bails (e.g. the liveness check above
-    /// failed), `apply()` now returns that error immediately and does
-    /// NOT go on to apply the nft DNS redirect — see the `?` below.
-    /// That's the second half of the fix: even if the resolver is
-    /// somehow unhealthy, we never commit the redirect against it.
+    /// If `apply_resolver` bails (e.g. the liveness check failed),
+    /// `apply()` returns that error immediately and does NOT go on to
+    /// apply the nft DNS redirect — see the `?` below. That way, even
+    /// if the resolver is unhealthy, we never commit the redirect
+    /// against it (which would otherwise take down all DNS, not just
+    /// blocked domains).
     pub async fn apply(&self, rules: &RuleSet, resolver_config_path: &PathBuf) -> Result<()> {
-        let ips = Self::resolve_all(&rules.websites).await;
-
         self.apply_resolver(&rules.websites, resolver_config_path).await?;
 
         if !self.nft_available().await {
@@ -642,13 +588,12 @@ impl NftEngine {
         let redirect_script = Self::render_dns_redirect_script(UPSTREAM_RESOLVER);
         self.apply_nft_script("ip", NAT_TABLE, &redirect_script).await?;
 
-        let filter_script = Self::render_filter_script(&ips);
+        let filter_script = Self::render_filter_script();
         self.apply_nft_script("inet", FILTER_TABLE, &filter_script).await?;
 
         tracing::info!(
-            "applied {} website rule(s), {} IP(s) blocked, DNS redirect + DoT block active",
+            "applied {} website rule(s) via DNS blackhole, DNS redirect + DoT block active",
             rules.websites.len(),
-            ips.len()
         );
         Ok(())
     }
@@ -692,39 +637,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn filter_script_includes_both_families_and_dot_block() {
-        let mut ips = BTreeSet::new();
-        ips.insert("93.184.216.34".parse::<IpAddr>().unwrap());
-        ips.insert("2606:2800:220:1:248:1893:25c8:1946".parse::<IpAddr>().unwrap());
-        let script = NftEngine::render_filter_script(&ips);
-        assert!(script.contains("93.184.216.34"));
-        assert!(script.contains("2606:2800:220:1:248:1893:25c8:1946"));
+    fn filter_script_drops_dot_and_has_no_ip_sets() {
+        // Regression test for the CDN-collision bug: this script must
+        // NOT contain any per-IP blocking anymore. Enforcement is
+        // DNS-layer only (see render_resolver_config); this table's
+        // only remaining job is blocking DNS-over-TLS so nothing can
+        // route around our DNS redirect via an encrypted resolver port.
+        let script = NftEngine::render_filter_script();
         assert!(script.contains("table inet mindgate"));
-        assert!(script.contains("ip daddr @blocked_v4 counter drop"));
         assert!(script.contains("tcp dport 853 counter drop"));
-    }
-
-    #[test]
-    fn filter_script_handles_empty_set() {
-        // Regression test for a real bug caught against actual `nft`:
-        // an explicit `elements = {  }` is a syntax error to nft, so an
-        // empty set must omit the elements line entirely rather than
-        // emit it with nothing inside.
-        let script = NftEngine::render_filter_script(&BTreeSet::new());
-        assert!(!script.contains("elements ="));
-        assert!(script.contains("set blocked_v4"));
-        assert!(script.contains("set blocked_v6"));
-    }
-
-    #[test]
-    fn filter_script_omits_elements_for_family_with_no_addresses() {
-        // A domain that only resolves to, say, IPv6 shouldn't produce a
-        // broken empty `elements = {  }` for the untouched v4 set.
-        let mut ips = BTreeSet::new();
-        ips.insert("2606:2800:220:1:248:1893:25c8:1946".parse::<IpAddr>().unwrap());
-        let script = NftEngine::render_filter_script(&ips);
-        let v4_block = script.split("set blocked_v4").nth(1).unwrap().split("set blocked_v6").next().unwrap();
-        assert!(!v4_block.contains("elements ="));
+        assert!(!script.contains("blocked_v4"));
+        assert!(!script.contains("blocked_v6"));
+        assert!(!script.contains("ip daddr"));
     }
 
     #[test]
@@ -753,6 +677,9 @@ mod tests {
 
     #[test]
     fn resolver_config_blackholes_doh_canary_even_with_no_rules() {
+        // The DoH canary is still a blackhole (NXDOMAIN) — there's no
+        // reason to serve it a page, it's not something the user
+        // would ever open in a browser tab themselves.
         let config = NftEngine::render_resolver_config(&[], "1.1.1.1");
         assert!(config.contains("server=/use-application-dns.net/"));
         assert!(config.contains("server=1.1.1.1"));
@@ -761,6 +688,11 @@ mod tests {
 
     #[test]
     fn resolver_config_blackholes_each_blocked_domain() {
+        // Regression test for the loopback-redirect regression: blocked
+        // website domains must be a plain `server=/domain/` blackhole
+        // (NXDOMAIN), not an `address=/domain/IP` redirect to a local
+        // block-page server. The redirect approach is what broke DNS
+        // system-wide and took whole subdomain trees down with it.
         let websites = vec![
             WebsiteRule { domain: "reddit.com".into() },
             WebsiteRule { domain: "twitter.com".into() },
@@ -768,6 +700,7 @@ mod tests {
         let config = NftEngine::render_resolver_config(&websites, "1.1.1.1");
         assert!(config.contains("server=/reddit.com/"));
         assert!(config.contains("server=/twitter.com/"));
+        assert!(!config.contains("address=/"));
         assert!(config.contains("server=/use-application-dns.net/"));
     }
 }
