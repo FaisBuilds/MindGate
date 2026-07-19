@@ -20,16 +20,21 @@ enum Commands {
     ///
     /// There is no site-specific command (no `add-subreddit`, etc), and
     /// no hyphenated commands (no `add-keyword`, etc) — "path" and
-    /// "keyword" are just the second word after `add`/`remove`.
+    /// "keyword" are just the second word after `add`/`remove`. A bare
+    /// value is validated by its shape: something with a `/` is
+    /// treated as a path typed without `path`, something with no `.`
+    /// can't be a domain and is treated as a keyword typed without
+    /// `keyword` — so a mistyped command gets a helpful nudge instead
+    /// of silently landing in the wrong bucket.
     ///
     /// Examples:
     ///   mindgate add youtube.com
     ///   mindgate add path reddit.com/r/gaming
     ///   mindgate add keyword nsfw
     Add {
-        /// Either `<domain>`, or the literal `path` followed by
-        /// `<domain>/<path-prefix>`, or the literal `keyword` followed
-        /// by a value (e.g. `path reddit.com/r/gaming`, `keyword nsfw`)
+        /// A bare domain, or the literal `path`/`keyword` followed by
+        /// the matching value (e.g. `path reddit.com/r/gaming`,
+        /// `keyword nsfw`)
         #[arg(num_args = 1..=2)]
         target: Vec<String>,
     },
@@ -38,9 +43,8 @@ enum Commands {
     ///   mindgate remove path <domain>/<path>
     ///   mindgate remove keyword <value>
     Remove {
-        /// Either `<domain>`, or the literal `path` followed by
-        /// `<domain>/<path-prefix>`, or the literal `keyword` followed
-        /// by a value
+        /// A bare domain, or the literal `path`/`keyword` followed by
+        /// the matching value
         #[arg(num_args = 1..=2)]
         target: Vec<String>,
     },
@@ -133,7 +137,60 @@ fn parse_duration(input: &str) -> Result<Option<u64>, String> {
     Ok(Some(seconds))
 }
 
+/// Lightweight domain sanity check — not a full RFC 1035 validator,
+/// just enough to catch the actual mistakes people make: a bare word
+/// with no TLD ("procrastination"), a full URL ("https://reddit.com"),
+/// or something with a path/query tacked on ("reddit.com/r/gaming"
+/// where a bare domain was expected). Deliberately permissive on
+/// anything that's actually shaped like a domain — this isn't trying
+/// to reject domains that don't exist, only inputs that clearly aren't
+/// domains at all.
+fn is_valid_domain(s: &str) -> bool {
+    let s = s.trim();
+    if s.is_empty() || s.contains(char::is_whitespace) {
+        return false;
+    }
+    if s.contains("://") || s.contains('/') {
+        return false;
+    }
+    let labels: Vec<&str> = s.split('.').collect();
+    // Needs at least "name.tld" — a bare word has no dot at all.
+    if labels.len() < 2 {
+        return false;
+    }
+    for label in &labels {
+        if label.is_empty() {
+            return false;
+        }
+        if !label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            return false;
+        }
+        if label.starts_with('-') || label.ends_with('-') {
+            return false;
+        }
+    }
+    let tld = labels.last().unwrap();
+    tld.len() >= 2 && tld.chars().all(|c| c.is_ascii_alphabetic())
+}
+
+/// If `value` looks like a domain or a domain/path — used to catch the
+/// "typed the wrong subcommand" mistake when validating a keyword, e.g.
+/// `mindgate add keyword youtube.com` was almost certainly meant to be
+/// `mindgate add youtube.com`.
+fn looks_like_domain_or_path(value: &str) -> Option<&'static str> {
+    if let Some(slash_idx) = value.find('/') {
+        if is_valid_domain(&value[..slash_idx]) {
+            return Some("path");
+        }
+    }
+    if is_valid_domain(value) {
+        return Some("website");
+    }
+    None
+}
+
 /// What `add`/`remove`'s trailing args resolved to.
+#[derive(Debug)]
 enum Target {
     /// `mindgate add youtube.com` — whole-domain, network-layer block.
     Website(String),
@@ -146,13 +203,13 @@ enum Target {
 }
 
 /// Parses the `Vec<String>` collected by clap for `add`/`remove` into
-/// a `Target`. Three shapes are accepted:
-///   [domain]                 -> Target::Website
-///   ["path", combined]       -> Target::Path (via split_domain_path)
-///   ["keyword", value]       -> Target::Keyword
-/// Anything else (0 args, a bare "path"/"keyword" with nothing after
-/// it, 3+ args) is a usage error, reported client-side before any
-/// socket round trip.
+/// a `Target`. A bare domain (`mindgate add youtube.com`) is still the
+/// default, no literal needed — `path`/`keyword` remain explicit
+/// literals since a bare value can't tell you "block this path" or
+/// "block this keyword" on its own. Validation still runs on the bare
+/// form by reading its shape: a `/` means it's a path typed in the
+/// wrong place, no `.` means it can't be a domain at all (probably a
+/// keyword), otherwise it's checked as a domain.
 fn parse_target(args: &[String]) -> Result<Target, String> {
     match args {
         [] => Err(
@@ -161,34 +218,72 @@ fn parse_target(args: &[String]) -> Result<Target, String> {
              `mindgate add keyword nsfw`"
                 .to_string(),
         ),
-        [only] => {
-            if only.eq_ignore_ascii_case("path") {
-                Err(
-                    "`path` needs a `<domain>/<path>` argument, e.g. \
-                     `mindgate add path reddit.com/r/gaming`"
-                        .to_string(),
-                )
-            } else if only.eq_ignore_ascii_case("keyword") {
-                Err(
-                    "`keyword` needs a value, e.g. `mindgate add keyword nsfw`".to_string(),
-                )
-            } else {
-                Ok(Target::Website(only.trim().to_lowercase()))
+        [literal, value] if literal.eq_ignore_ascii_case("path") => {
+            let (domain, path) = split_domain_path(value)?;
+            if !is_valid_domain(&domain) {
+                return Err(format!(
+                    "Invalid domain in '{value}'.\nExample: reddit.com/r/gaming"
+                ));
             }
-        }
-        [literal, combined] if literal.eq_ignore_ascii_case("path") => {
-            let (domain, path) = split_domain_path(combined)?;
             Ok(Target::Path { domain, path })
         }
         [literal, value] if literal.eq_ignore_ascii_case("keyword") => {
+            if let Some(shape) = looks_like_domain_or_path(value) {
+                let suggestion = if shape == "path" {
+                    format!("mindgate add path {value}")
+                } else {
+                    format!("mindgate add {value}")
+                };
+                return Err(format!("That looks like a {shape}.\n\nUse:\n\n{suggestion}"));
+            }
             Ok(Target::Keyword(value.clone()))
         }
+        [only] => classify_bare_input(only),
         _ => Err(format!(
             "unrecognized arguments '{}' — usage: `mindgate add <domain>`, \
              `mindgate add path <domain>/<path>`, or `mindgate add keyword <value>`",
             args.join(" ")
         )),
     }
+}
+
+/// Classifies a single bare argument to `add`/`remove` by shape:
+///   contains '/'   -> almost certainly a path typed without `path`
+///   no '.' at all  -> can't be a domain; probably meant as a keyword
+///   otherwise      -> validated as a domain
+fn classify_bare_input(input: &str) -> Result<Target, String> {
+    let trimmed = input.trim();
+
+    // "path"/"keyword" typed alone with nothing after them are usage
+    // errors, not domains named "path" or "keyword".
+    if trimmed.eq_ignore_ascii_case("path") {
+        return Err(
+            "`path` needs a `<domain>/<path>` argument, e.g. \
+             `mindgate add path reddit.com/r/gaming`"
+                .to_string(),
+        );
+    }
+    if trimmed.eq_ignore_ascii_case("keyword") {
+        return Err("`keyword` needs a value, e.g. `mindgate add keyword nsfw`".to_string());
+    }
+
+    if trimmed.contains('/') {
+        return Err(format!(
+            "That looks like a path.\n\nUse:\n\nmindgate add path {trimmed}"
+        ));
+    }
+
+    if !trimmed.contains('.') {
+        return Err(format!(
+            "That doesn't look like a website.\n\nDid you mean?\n\nmindgate add keyword {trimmed}"
+        ));
+    }
+
+    let domain = trimmed.to_lowercase();
+    if !is_valid_domain(&domain) {
+        return Err("Invalid domain.\nExample: youtube.com".to_string());
+    }
+    Ok(Target::Website(domain))
 }
 
 /// Splits a combined `domain/path` string like `reddit.com/r/gaming`
@@ -234,11 +329,32 @@ mod target_parsing_tests {
     }
 
     #[test]
-    fn domain_is_lowercased() {
+    fn bare_domain_is_lowercased() {
         match parse_target(&["YouTube.com".to_string()]).unwrap() {
             Target::Website(d) => assert_eq!(d, "youtube.com"),
             _ => panic!("expected Website"),
         }
+    }
+
+    #[test]
+    fn bare_word_with_no_dot_suggests_keyword() {
+        let err = parse_target(&["procrastination".to_string()]).unwrap_err();
+        assert!(err.contains("doesn't look like a website"));
+        assert!(err.contains("mindgate add keyword procrastination"));
+    }
+
+    #[test]
+    fn bare_value_with_slash_suggests_path() {
+        let err = parse_target(&["reddit.com/r/gaming".to_string()]).unwrap_err();
+        assert!(err.contains("looks like a path"));
+        assert!(err.contains("mindgate add path reddit.com/r/gaming"));
+    }
+
+    #[test]
+    fn bare_full_url_is_rejected() {
+        // Has a '/', so it's caught by the path-shape check before it
+        // ever reaches domain validation.
+        assert!(parse_target(&["https://www.reddit.com/r/gaming/".to_string()]).is_err());
     }
 
     #[test]
@@ -269,6 +385,13 @@ mod target_parsing_tests {
     }
 
     #[test]
+    fn path_with_invalid_domain_portion_is_rejected() {
+        // "gaming/r/whatever" — the part before the slash isn't a
+        // valid domain at all.
+        assert!(parse_target(&["path".to_string(), "gaming/r/whatever".to_string()]).is_err());
+    }
+
+    #[test]
     fn keyword_literal_captures_value() {
         match parse_target(&["keyword".to_string(), "nsfw".to_string()]).unwrap() {
             Target::Keyword(value) => assert_eq!(value, "nsfw"),
@@ -284,6 +407,35 @@ mod target_parsing_tests {
     #[test]
     fn bare_keyword_literal_with_no_value_is_rejected() {
         assert!(parse_target(&["keyword".to_string()]).is_err());
+    }
+
+    #[test]
+    fn keyword_that_is_actually_a_domain_is_rejected() {
+        let err =
+            parse_target(&["keyword".to_string(), "youtube.com".to_string()]).unwrap_err();
+        assert!(err.contains("looks like a website"));
+        assert!(err.contains("mindgate add youtube.com"));
+    }
+
+    #[test]
+    fn keyword_that_is_actually_a_domain_path_is_rejected() {
+        let err = parse_target(&[
+            "keyword".to_string(),
+            "reddit.com/r/gaming".to_string(),
+        ])
+        .unwrap_err();
+        assert!(err.contains("looks like a path"));
+        assert!(err.contains("mindgate add path reddit.com/r/gaming"));
+    }
+
+    #[test]
+    fn ordinary_keyword_passes_through_unchanged() {
+        for value in ["minecraft", "pizza", "porn", "gambling"] {
+            match parse_target(&["keyword".to_string(), value.to_string()]).unwrap() {
+                Target::Keyword(v) => assert_eq!(v, value),
+                _ => panic!("expected Keyword"),
+            }
+        }
     }
 
     #[test]
@@ -311,13 +463,45 @@ mod target_parsing_tests {
         ])
         .is_err());
     }
+}
+
+#[cfg(test)]
+mod domain_validation_tests {
+    use super::*;
 
     #[test]
-    fn domain_only_named_path_is_rejected_without_second_arg() {
-        // Guards against a user typing just `mindgate add path` and
-        // getting a confusing "blocked domain: path" instead of a
-        // clear usage error.
-        assert!(parse_target(&["path".to_string()]).is_err());
+    fn accepts_ordinary_domains() {
+        for d in ["youtube.com", "x.com", "reddit.com", "sub.example.co.uk"] {
+            assert!(is_valid_domain(d), "expected '{d}' to be valid");
+        }
+    }
+
+    #[test]
+    fn rejects_bare_word_with_no_tld() {
+        assert!(!is_valid_domain("procrastination"));
+    }
+
+    #[test]
+    fn rejects_full_url() {
+        assert!(!is_valid_domain("https://www.reddit.com/r/gaming/"));
+    }
+
+    #[test]
+    fn rejects_domain_with_path() {
+        assert!(!is_valid_domain("reddit.com/r/gaming"));
+    }
+
+    #[test]
+    fn rejects_empty_and_whitespace() {
+        assert!(!is_valid_domain(""));
+        assert!(!is_valid_domain("   "));
+        assert!(!is_valid_domain("you tube.com"));
+    }
+
+    #[test]
+    fn rejects_leading_or_trailing_hyphen_label() {
+        assert!(!is_valid_domain("-youtube.com"));
+        assert!(!is_valid_domain("youtube-.com"));
     }
 }
 
