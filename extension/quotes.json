@@ -1,0 +1,113 @@
+[
+  { "text": "You have power over your mind, not outside events. Realize this, and you will find strength.", "author": "Marcus Aurelius", "category": "Discipline" },
+  { "text": "The impediment to action advances action. What stands in the way becomes the way.", "author": "Marcus Aurelius", "category": "Wisdom" },
+  { "text": "Waste no more time arguing about what a good man should be. Be one.", "author": "Marcus Aurelius", "category": "Character" },
+  { "text": "The soul becomes dyed with the color of its thoughts.", "author": "Marcus Aurelius", "category": "Wisdom" },
+  { "text": "Confine yourself to the present.", "author": "Marcus Aurelius", "category": "Peace" },
+  { "text": "It is not death that a man should fear, but he should fear never beginning to live.", "author": "Marcus Aurelius", "category": "Purpose" },
+  { "text": "If it is not right, do not do it; if it is not true, do not say it.", "author": "Marcus Aurelius", "category": "Character" },
+  { "text": "Very little is needed to make a happy life.", "author": "Marcus Aurelius", "category": "Simplicity" },
+  { "text": "Loss is nothing else but change, and change is Nature's delight.", "author": "Marcus Aurelius", "category": "Peace" },
+  { "text": "How much more grievous are the consequences of anger than the causes of it.", "author": "Marcus Aurelius", "category": "Discipline" },
+
+  { "text": "It's not what happens to you, but how you react to it that matters.", "author": "Epictetus", "category": "Discipline" },
+  { "text": "No man is free who is not master of himself.", "author": "Epictetus", "category": "Discipline" },
+  { "text": "First say to yourself what you would be; and then do what you have to do.", "author": "Epictetus", "category": "Purpose" },
+  { "text": "Wealth consists not in having great possessions, but in having few wants.", "author": "Epictetus", "category": "Simplicity" },
+  { "text": "Only the educated are free.", "author": "Epictetus", "category": "Wisdom" },
+  { "text": "Circumstances do not make the man, they only reveal him to himself.", "author": "Epictetus", "category": "Character" },
+
+  { "text": "We suffer more often in imagination than in reality.", "author": "Seneca", "category": "Peace" },
+  { "text": "It is not that we have a short time to live, but that we waste a lot of it.", "author": "Seneca", "category": "Time" },
+  { "text": "Difficulties strengthen the mind, as labor does the body.", "author": "Seneca", "category": "Discipline" },
+  { "text": "He who is brave is free.", "author": "Seneca", "category": "Courage" },
+  { "text": "As long as you live, keep learning how to live.", "author": "Seneca", "category": "Wisdom" },
+  { "text": "Every new beginning comes from some other beginning's end.", "author": "Seneca", "category": "Time" },
+
+  { "text": "A journey of a thousand miles begins with a single step.", "author": "Lao Tzu", "category": "Discipline" },
+  { "text": "Nature does not hurry, yet everything is accomplished.", "author": "Lao Tzu", "category": "Peace" },
+  { "text": "He who knows others is wise; he who knows himself is enlightened.", "author": "Lao Tzu", "category": "Wisdom" },
+  { "text": "When I let go of what I am, I become what I might be.", "author": "Lao Tzu", "category": "Purpose" },
+  { "text": "Mastering others is strength. Mastering yourself is true power.", "author": "Lao Tzu", "category": "Discipline" },
+  { "text": "Care about what other people think and you will always be their prisoner.", "author": "Lao Tzu", "category": "Peace" },
+
+  { "text": "Our greatest glory is not in never falling, but in rising every time we fall.", "author": "Confucius", "category": "Courage" },
+  { "text": "It does not matter how slowly you go as long as you do not stop.", "author": "Confucius", "category": "Discipline" },
+  { "text": "The man who moves a mountain begins by carrying away small stones.", "author": "Confucius", "category": "Purpose" },
+  { "text": "He who conquers himself is the mightiest warrior.", "author": "Confucius", "category": "Discipline" },
+  { "text": "Real knowledge is to know the extent of one's ignorance.", "author": "Confucius", "category": "Wisdom" },
+
+  { "text": "The wound is the place where the light enters you.", "author": "Rumi", "category": "Faith" },
+  { "text": "Silence is the language of God, all else is poor translation.", "author": "Rumi", "category": "Peace" },
+  { "text": "Let yourself be silently drawn by the strange pull of what you really love.", "author": "Rumi", "category": "Purpose" },
+  { "text": "Yesterday I was clever, so I wanted to change the world. Today I am wise, so I am changing myself.", "author": "Rumi", "category": "Wisdom" },
+  { "text": "Raise your words, not your voice. It is rain that grows flowers, not thunder.", "author": "Rumi", "category": "Character" },
+
+  { "text": "Be still, and know that I am God.", "author": "Psalm 46:10", "category": "Faith" },
+  { "text": "Trust in the Lord with all your heart, and lean not on your own understanding.", "author": "Proverbs 3:5", "category": "Faith" },
+  { "text": "Pride goes before destruction, and a haughty spirit before a fall.", "author": "Proverbs 16:18", "category": "Character" },
+  { "text": "For everything there is a season, and a time for every purpose under heaven.", "author": "Ecclesiastes 3:1", "category": "Time" },
+  { "text": "The Lord is my shepherd; I shall not want.", "author": "Psalm 23:1", "category": "Faith" },
+  { "text": "Iron sharpens iron, and one man sharpens another.", "author": "Proverbs 27:17", "category": "Character" },
+  { "text": "Better a patient man than a warrior, a man who controls his temper than one who takes a city.", "author": "Proverbs 16:32", "category": "Discipline" },
+  { "text": "Whoever is patient has great understanding, but one who is quick-tempered displays folly.", "author": "Proverbs 14:29", "category": "Wisdom" },
+
+  { "text": "Verily, with hardship comes ease.", "author": "Quran 94:6", "category": "Faith" },
+  { "text": "Whoever saves one life, it is as if he had saved all mankind.", "author": "Quran 5:32", "category": "Faith" },
+  { "text": "Do not lose hope, nor be sad.", "author": "Quran 3:139", "category": "Faith" },
+  { "text": "And Allah is with the patient.", "author": "Quran 2:153", "category": "Faith" },
+
+  { "text": "You have the right to work, but never to the fruit of work.", "author": "Bhagavad Gita 2:47", "category": "Discipline" },
+  { "text": "For the soul there is neither birth nor death.", "author": "Bhagavad Gita 2:20", "category": "Faith" },
+  { "text": "The mind is restless, but it is subdued through practice.", "author": "Bhagavad Gita 6:35", "category": "Discipline" },
+
+  { "text": "The mystery of human existence lies not in just staying alive, but in finding something to live for.", "author": "Fyodor Dostoevsky", "category": "Purpose" },
+  { "text": "To go wrong in one's own way is better than to go right in someone else's.", "author": "Fyodor Dostoevsky", "category": "Character" },
+  { "text": "Much unhappiness has come into the world because of bewilderment and things left unsaid.", "author": "Fyodor Dostoevsky", "category": "Wisdom" },
+
+  { "text": "Courage is not simply one of the virtues, but the form of every virtue at the testing point.", "author": "C.S. Lewis", "category": "Courage" },
+  { "text": "Friendship is born at that moment when one person says to another, 'What! You too?'", "author": "C.S. Lewis", "category": "Wisdom" },
+  { "text": "The safest road to Hell is the gradual one.", "author": "C.S. Lewis", "category": "Discipline" },
+
+  { "text": "When we are no longer able to change a situation, we are challenged to change ourselves.", "author": "Viktor Frankl", "category": "Purpose" },
+  { "text": "The last of the human freedoms is to choose one's attitude in any given set of circumstances.", "author": "Viktor Frankl", "category": "Purpose" },
+  { "text": "Those who have a 'why' to live, can bear with almost any 'how'.", "author": "Viktor Frankl", "category": "Purpose" },
+
+  { "text": "Desire is a contract you make with yourself to be unhappy until you get what you want.", "author": "Naval Ravikant", "category": "Peace" },
+  { "text": "A calm mind, a fit body, and a house full of love. These things cannot be bought.", "author": "Naval Ravikant", "category": "Simplicity" },
+
+  { "text": "You do not rise to the level of your goals. You fall to the level of your systems.", "author": "James Clear", "category": "Discipline" },
+  { "text": "Every action you take is a vote for the type of person you wish to become.", "author": "James Clear", "category": "Character" },
+
+  { "text": "As you think, so shall you become.", "author": "Bruce Lee", "category": "Wisdom" },
+  { "text": "Simplicity is the key to brilliance.", "author": "Bruce Lee", "category": "Simplicity" },
+  { "text": "The successful warrior is the average man, with laser-like focus.", "author": "Bruce Lee", "category": "Discipline" },
+
+  { "text": "He who is not courageous enough to take risks will accomplish nothing in life.", "author": "Muhammad Ali", "category": "Courage" },
+  { "text": "Don't count the days, make the days count.", "author": "Muhammad Ali", "category": "Time" },
+
+  { "text": "Don't stop when you're tired. Stop when you're done.", "author": "David Goggins", "category": "Discipline" },
+  { "text": "Suffering is a test. That's all it is.", "author": "David Goggins", "category": "Discipline" },
+
+  { "text": "The time is always right to do what is right.", "author": "Martin Luther King Jr.", "category": "Character" },
+  { "text": "Darkness cannot drive out darkness; only light can do that.", "author": "Martin Luther King Jr.", "category": "Peace" },
+
+  { "text": "This too shall pass.", "author": "Persian proverb", "category": "Time" },
+  { "text": "Fall seven times, stand up eight.", "author": "Japanese proverb", "category": "Courage" },
+  { "text": "The best time to plant a tree was 20 years ago. The second best time is now.", "author": "Chinese proverb", "category": "Time" },
+  { "text": "A smooth sea never made a skilled sailor.", "author": "Anonymous wisdom", "category": "Courage" },
+  { "text": "The quieter you become, the more you are able to hear.", "author": "Anonymous wisdom", "category": "Peace" },
+  { "text": "What you resist, persists. What you accept, transforms.", "author": "Anonymous wisdom", "category": "Wisdom" },
+  { "text": "Not all those who wander are lost, but the ones who stay disciplined always arrive.", "author": "Anonymous wisdom", "category": "Discipline" },
+  { "text": "You cannot pour from an empty cup. Guard yours.", "author": "Anonymous wisdom", "category": "Peace" },
+  { "text": "One craving fed is a hundred cravings strengthened. One craving refused is a hundred cravings weakened.", "author": "Anonymous wisdom", "category": "Addiction Recovery" },
+  { "text": "The chains of habit are too weak to be felt until they are too strong to be broken.", "author": "Samuel Johnson", "category": "Addiction Recovery" },
+  { "text": "Rock bottom became the solid foundation on which I rebuilt my life.", "author": "J.K. Rowling", "category": "Addiction Recovery" },
+  { "text": "It is easier to prevent bad habits than to break them.", "author": "Benjamin Franklin", "category": "Discipline" },
+  { "text": "Freedom is not the absence of commitments, but the ability to choose what binds you.", "author": "Anonymous wisdom", "category": "Purpose" },
+  {
+  "text": "If your right hand causes you to stumble, cut it off and throw it away. It is better for you to lose one part of your body than for your whole body to go into hell.",
+  "author": "Matthew 5:30",
+  "category": "Discipline"
+}
+]

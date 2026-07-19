@@ -1,38 +1,44 @@
 (function () {
-  // Original lines, written for MindGate — calm and matter-of-fact,
-  // not preachy. A new one on every visit, picked client-side with
-  // Math.random(); no backend involved.
-  const QUOTES = [
-    "Stay here. The life you want is built one decision at a time.",
-    "This moment passes either way. Choose the version of it you'll respect later.",
-    "You didn't lock this by accident. You locked it on purpose.",
-    "The urge is loud right now. It will be quiet again soon.",
-    "Future you is watching. Make them proud.",
-    "Discipline isn't punishment. It's a promise you're keeping.",
-    "You already decided. This is just the follow-through.",
-    "Small refusals, repeated, become a different life.",
-    "Nothing here was worth what you're building instead.",
-    "The version of you that locked this trusted the version of you that's reading this.",
-    "Not now doesn't mean never. It means not like this.",
-    "This is the boring, quiet part. It's also the part that works.",
-  ];
+  // ---------- quote ----------
+  //
+  // Quotes live in quotes.json (single source of truth, easy to grow
+  // toward the full curated set over time) rather than inline in this
+  // file, so the list can be edited/extended without touching logic.
+  // Picked once per page load with Math.random() — same behavior as
+  // before, so a lock that's still open keeps its quote until the tab
+  // is closed/reopened, per spec.
+  //
+  // block.html is same-origin with this file (both served from
+  // chrome-extension://<id>/), so a relative fetch works without any
+  // extra manifest permissions.
+  const FALLBACK_QUOTE = {
+    text: "The impediment to action advances action. What stands in the way becomes the way.",
+    author: "Marcus Aurelius",
+  };
 
-  function setRandomQuote() {
-    const quote = QUOTES[Math.floor(Math.random() * QUOTES.length)];
-    document.getElementById("quote").textContent = quote;
+  async function setRandomQuote() {
+    let quote = FALLBACK_QUOTE;
+    try {
+      const res = await fetch(chrome.runtime.getURL("quotes.json"));
+      const quotes = await res.json();
+      if (Array.isArray(quotes) && quotes.length > 0) {
+        quote = quotes[Math.floor(Math.random() * quotes.length)];
+      }
+    } catch (e) {
+      console.warn("[MindGate] Could not load quotes.json, using fallback quote:", e.message);
+    }
+    document.getElementById("quote").textContent = quote.text;
+    document.getElementById("quote-author").textContent = quote.author;
   }
 
-  // Formats the time remaining on the current lock into something
-  // readable — "12 Days Remaining", "4 Hours Remaining", "Locked
-  // Forever" for an untimed lock, etc. Reads from chrome.storage.local
-  // rather than talking to the daemon directly: block.html has no
-  // native-messaging access of its own, and background.js already
-  // keeps `lockInfo` fresh there every sync cycle.
+  // ---------- lock status ----------
+  //
+  // Unchanged from before: block.html has no native-messaging access
+  // of its own, so it reads the lockInfo that background.js already
+  // keeps fresh in chrome.storage.local on every sync cycle, rather
+  // than talking to the daemon directly.
   function formatRemaining(lockInfo) {
     if (!lockInfo || !lockInfo.locked) {
-      // Rare edge case: the lock expired in the moments between this
-      // tab being blocked and this page loading. Still calm, still
-      // accurate — not an error state.
       return "Lock Expired";
     }
 
@@ -71,15 +77,26 @@
     });
   }
 
-  document.getElementById("go-back").addEventListener("click", (e) => {
-    e.preventDefault();
-    if (window.history.length > 1) {
-      window.history.back();
-    } else {
-      window.location.href = "https://www.google.com";
+  // ---------- ambient particles ----------
+  //
+  // Purely decorative, no logic dependency on anything above. A
+  // handful of small dots drifting upward at staggered speeds/delays,
+  // generated once on load so every visit feels slightly different.
+  function spawnParticles() {
+    const container = document.getElementById("particles");
+    const COUNT = 18;
+    for (let i = 0; i < COUNT; i++) {
+      const p = document.createElement("div");
+      p.className = "particle";
+      p.style.left = `${Math.random() * 100}%`;
+      p.style.animationDuration = `${12 + Math.random() * 10}s`;
+      p.style.animationDelay = `${Math.random() * 12}s`;
+      p.style.opacity = String(0.3 + Math.random() * 0.4);
+      container.appendChild(p);
     }
-  });
+  }
 
   setRandomQuote();
   setLockValue();
+  spawnParticles();
 })();
