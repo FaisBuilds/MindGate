@@ -12,13 +12,20 @@
   let rulesLoaded = false;
 
   function loadRules(onLoaded) {
-    chrome.storage.local.get(["keywords", "subreddits", "paths"], (data) => {
-      cachedKeywords = data.keywords || [];
-      cachedSubreddits = data.subreddits || [];
-      cachedPaths = data.paths || [];
-      rulesLoaded = true;
-      if (onLoaded) onLoaded();
-    });
+    try {
+      chrome.storage.local.get(["keywords", "subreddits", "paths"], (data) => {
+        cachedKeywords = data.keywords || [];
+        cachedSubreddits = data.subreddits || [];
+        cachedPaths = data.paths || [];
+        rulesLoaded = true;
+        if (onLoaded) onLoaded();
+      });
+    } catch (e) {
+      // Stale script, context already dead — nothing to do here but
+      // avoid an uncaught exception; see isExtensionContextValid()'s
+      // comment on blockPage() for the full reasoning.
+      console.warn("[MindGate] loadRules failed, likely stale context:", e.message);
+    }
   }
 
   // Keep the cache fresh if a sync happens while the tab is already
@@ -157,41 +164,58 @@
     window.addEventListener("popstate", notifyNavigation);
   })();
 
-  // Replaces the webpage content with a clean MindGate blocked screen
-  // Theme: baby pink / white, matching the product's block-page identity (CONTEXT.md §5)
-  function blockPage(reason) {
-    window.stop(); // Stop any remaining page assets from loading (no-op on a pure SPA route change, harmless)
-    clearTimeout(domScanTimer);
-
-    const blockHtml = `
-      <div style="
-        position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
-        background: #fff0f5; color: #4a2c3a; font-family: system-ui, sans-serif;
-        display: flex; flex-direction: column; align-items: center; justify-content: center;
-        z-index: 2147483647; text-align: center; box-sizing: border-box; padding: 20px;
-      ">
-        <div style="max-width: 500px; background: #ffffff; padding: 40px; border-radius: 16px; border: 1px solid #f7c5d8; box-shadow: 0 10px 25px -5px rgba(244, 114, 182, 0.25);">
-          <span style="font-size: 48px;">🌸</span>
-          <h1 style="font-size: 24px; margin-top: 16px; margin-bottom: 8px; font-weight: 700; color: #d6336c;">Access Blocked by MindGate</h1>
-          <p style="color: #a15b76; font-size: 14px; margin-bottom: 24px; line-height: 1.5;">${reason}</p>
-          <div style="height: 1px; background: #f7c5d8; margin-bottom: 24px;"></div>
-          <button onclick="window.history.back()" style="
-            background: #f472b6; color: white; border: none; padding: 10px 24px;
-            font-size: 14px; font-weight: 600; border-radius: 8px; cursor: pointer;
-            transition: background 0.2s;
-          " onmouseover="this.style.background='#ec4899'" onmouseout="this.style.background='#f472b6'">
-            Go Back
-          </button>
-        </div>
-      </div>
-    `;
-
-    if (document.body) {
-      document.documentElement.innerHTML = blockHtml;
-    } else {
-      document.addEventListener("DOMContentLoaded", () => {
-        document.documentElement.innerHTML = blockHtml;
-      });
+  // Navigates the tab to MindGate's bundled block page. A real
+  // navigation (not an innerHTML swap) — this is what makes block.html
+  // a genuine, single, reusable page rather than markup duplicated
+  // inline at every call site. `reason` is passed through as a query
+  // param purely for anyone debugging via devtools; block.html itself
+  // deliberately never reads or displays it — it doesn't know or care
+  // whether this was a keyword, website, or path match, only that
+  // MindGate protected you.
+  // True once this content script's extension context has been
+  // invalidated (e.g. the extension was reloaded/updated while this
+  // tab was already open). Chrome doesn't kill an old content script
+  // when that happens — it just cuts off its chrome.* access — so
+  // this script keeps running and can still fire blockPage() against
+  // a URL, it just can no longer complete the redirect.
+  function isExtensionContextValid() {
+    try {
+      return !!(chrome.runtime && chrome.runtime.id);
+    } catch (e) {
+      return false;
     }
+  }
+
+  function blockPage(reason) {
+    // Check BEFORE touching the page. The bug this avoids: a stale
+    // script calls window.stop() first (freezing the page mid-render),
+    // THEN discovers chrome.runtime.getURL() is dead because the
+    // context was invalidated — leaving a permanently blank, frozen
+    // tab with no redirect ever firing and no way out but a manual
+    // reload. Checking first means a stale script does nothing at
+    // all instead: the fresh content script Chrome injects on the
+    // next real navigation (or a manual reload) will catch the same
+    // URL correctly.
+    if (!isExtensionContextValid()) {
+      console.warn(
+        "[MindGate] Stale content script (extension context invalidated) — " +
+          "skipping block. Reload this tab to restore enforcement."
+      );
+      return;
+    }
+
+    let blockUrl;
+    try {
+      blockUrl = chrome.runtime.getURL("block.html") + "?reason=" + encodeURIComponent(reason);
+    } catch (e) {
+      // Context died between the check above and here — same
+      // no-op-rather-than-freeze reasoning.
+      console.warn("[MindGate] Extension context invalidated mid-block:", e.message);
+      return;
+    }
+
+    window.stop();
+    clearTimeout(domScanTimer);
+    window.location.replace(blockUrl);
   }
 })();

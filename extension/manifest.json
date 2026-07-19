@@ -9,7 +9,8 @@
     "tabs",
     "activeTab",
     "alarms",
-    "webNavigation"
+    "webNavigation",
+    "declarativeNetRequest"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -28,5 +29,11 @@
     "gecko": {
       "id": "protector@mindgate.local"
     }
-  }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["block.html", "block.js"],
+      "matches": ["<all_urls>"]
+    }
+  ]
 }
