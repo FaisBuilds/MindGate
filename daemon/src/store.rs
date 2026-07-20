@@ -7,7 +7,50 @@
 
 use anyhow::{Context, Result};
 use mindgate_common::{lock_state_path, rules_path, LockState, RuleSet};
+use std::process::Stdio;
 use tokio::fs;
+use tokio::process::Command;
+
+/// Best-effort `chattr +i`/`-i` on the lock file. This is friction,
+/// not a security boundary — root already has to run this daemon to
+/// touch nft/dnsmasq at all, and root can always `chattr -i` it back
+/// off. What it buys is that "delete lock.toml and restart the
+/// daemon" stops being a single careless command: you have to
+/// deliberately clear the immutable bit first, which is exactly the
+/// kind of extra, undeniable step Lock Mode is supposed to impose on
+/// yourself (see lock.rs's module doc — "friction, not a sandbox").
+///
+/// Deliberately non-fatal on failure: some filesystems (tmpfs,
+/// certain overlay/container setups — relevant for local dev, which
+/// often points `MINDGATE_CONFIG_DIR` at `/tmp`) don't support the
+/// ext2/3/4 immutable attribute at all. `chattr` failing there just
+/// means this one layer of friction isn't available; it must never
+/// block persisting the lock state itself, which is the part that
+/// actually matters.
+async fn set_lock_file_immutable(path: &std::path::Path, immutable: bool) {
+    let flag = if immutable { "+i" } else { "-i" };
+    let result = Command::new("chattr")
+        .arg(flag)
+        .arg(path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await;
+
+    match result {
+        Ok(status) if status.success() => {}
+        Ok(status) => tracing::warn!(
+            "chattr {flag} {} exited with {status} — filesystem likely doesn't support \
+             the immutable attribute; continuing without this extra layer of friction",
+            path.display()
+        ),
+        Err(e) => tracing::warn!(
+            "failed to run chattr {flag} {}: {e} — continuing without immutable lock \
+             file protection",
+            path.display()
+        ),
+    }
+}
 
 /// Load the rule set from disk. A missing file is not an error — it
 /// just means no rules have been added yet (e.g. first run after
@@ -73,10 +116,28 @@ pub async fn save_lock(state: &LockState) -> Result<()> {
             .await
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
+
+    // MUST run before the write below: a previous call may have left
+    // this file `chattr +i`'d (see the end of this function), and an
+    // immutable file can't be overwritten — even by root — until the
+    // attribute is cleared first. Idempotent/harmless if the file
+    // wasn't immutable (fresh install) or doesn't exist yet.
+    set_lock_file_immutable(&path, false).await;
+
     let toml_str = toml::to_string_pretty(state).context("failed to serialize lock state")?;
     fs::write(&path, toml_str)
         .await
         .with_context(|| format!("failed to write {}", path.display()))?;
+
+    // Re-lock the file down immediately after writing IF the new
+    // state is actually locked. Left mutable when `state.locked` is
+    // false (i.e. this call is persisting a clear/expiry) — an
+    // unlocked state has no reason to resist being overwritten by the
+    // next `mindgate lock`.
+    if state.locked {
+        set_lock_file_immutable(&path, true).await;
+    }
+
     Ok(())
 }
 

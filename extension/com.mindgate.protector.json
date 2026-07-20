@@ -1,7 +1,7 @@
 {
   "name": "com.mindgate.protector",
   "description": "MindGate Local Native Messaging Bridge",
-  "path": "/home/faisal/Desktop/MindGate/extension/mindgate.sh",
+  "path": "/etc/mindgate/mindgate-bridge.sh",
   "type": "stdio",
   "allowed_origins": [
     "chrome-extension://echllloajdapolndcjklcnmmkcajomhp/"

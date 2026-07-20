@@ -1,0 +1,29 @@
+[Unit]
+Description=MindGate enforcement daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/mindgated
+Restart=always
+RestartSec=2
+
+# Kill the whole cgroup on stop, not just the main PID, so a forced
+# stop can't leave an orphaned dnsmasq child behind believing it's
+# still supposed to be running. engine.rs's own ensure_port_clear is
+# still the last-resort backstop for the cases this doesn't cover
+# (e.g. an ungraceful `kill -9` of the whole machine's mindgated
+# process tree between reboots).
+KillMode=control-group
+
+# Root is required: engine.rs shells out to `nft` and binds a
+# loopback dnsmasq that nftables then redirects system DNS traffic to
+# — both need root in practice on a normal desktop install.
+User=root
+
+# Environment overrides for local dev/testing live in
+# /etc/mindgate/env if you ever need them (not created by default):
+# EnvironmentFile=-/etc/mindgate/env
+
+[Install]
+WantedBy=multi-user.target

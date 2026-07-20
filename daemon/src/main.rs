@@ -1,5 +1,7 @@
 mod engine;
+mod guardian;
 mod lock;
+mod self_watch;
 mod server;
 mod store;
 
@@ -24,6 +26,11 @@ pub struct AppState {
     pub lock: Mutex<LockState>,
     pub last_heartbeat: Mutex<Option<Instant>>,
     pub resolver_config_path: PathBuf,
+    /// When this `AppState` was constructed. Read by `guardian.rs` to
+    /// grant a startup grace period before treating "no heartbeat has
+    /// ever arrived" as "the extension is gone" rather than "the
+    /// browser/extension just hasn't had time to connect yet."
+    pub started_at: Instant,
 }
 
 /// How often the lock-expiry watcher checks whether a timed lock has
@@ -175,9 +182,12 @@ async fn main() -> Result<()> {
         lock: Mutex::new(lock_state),
         last_heartbeat: Mutex::new(None),
         resolver_config_path,
+        started_at: Instant::now(),
     });
 
     spawn_lock_watcher(state.clone());
+    guardian::spawn(state.clone());
+    self_watch::spawn();
 
     tokio::select! {
         result = server::run(state.clone()) => {

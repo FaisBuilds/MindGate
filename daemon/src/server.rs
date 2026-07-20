@@ -37,7 +37,12 @@ use tokio::net::{UnixListener, UnixStream};
 /// correctly the entire time. 150s gives comfortable headroom over the
 /// real ~60s cadence plus jitter, without being so loose that a truly
 /// dead extension takes minutes to show up as disconnected.
-const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(150);
+///
+/// Also reused by `guardian.rs` as the definition of "extension is
+/// missing" for the browser-kill fallback — one definition of "stale"
+/// shared by both `mindgate status` and the guardian, so they can
+/// never disagree about whether the extension is connected.
+pub(crate) const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(150);
 
 /// Look up the connecting peer's UID via `SO_PEERCRED`. Returns `None`
 /// if the platform/socket doesn't support it, which callers treat as

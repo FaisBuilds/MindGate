@@ -1,0 +1,13 @@
+[Unit]
+Description=MindGate watchdog — restarts mindgated if it's stopped or killed
+After=mindgated.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/mindgate-watchdog.sh
+Restart=always
+RestartSec=2
+User=root
+
+[Install]
+WantedBy=multi-user.target
