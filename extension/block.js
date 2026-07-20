@@ -16,17 +16,58 @@
     author: "Marcus Aurelius",
   };
 
+  // ---------- no-repeat cycle ----------
+  //
+  // Tracks which quote indices have been shown in the current cycle.
+  // Once every quote has been displayed, the array resets and a fresh
+  // shuffled order begins. This guarantees no quote repeats until the
+  // full set (~90 quotes) has been exhausted. Stored in
+  // chrome.storage.local so it persists across tab closes and browser
+  // restarts — a user opening 5 blocked tabs in a row sees 5 different
+  // quotes, not the same one 5 times.
+
+  function pickQuoteNoRepeat(quotes) {
+    return new Promise((resolve) => {
+      chrome.storage.local.get(["shownIndices"], (data) => {
+        let shown = data.shownIndices || [];
+
+        // Cycle complete — reset
+        if (shown.length >= quotes.length) {
+          shown = [];
+        }
+
+        // Build pool of unshown indices
+        const remaining = [];
+        for (let i = 0; i < quotes.length; i++) {
+          if (!shown.includes(i)) remaining.push(i);
+        }
+
+        // Pick random from remaining
+        const pick = remaining[Math.floor(Math.random() * remaining.length)];
+        shown.push(pick);
+
+        // Persist updated shown list
+        chrome.storage.local.set({ shownIndices: shown });
+
+        resolve(quotes[pick]);
+      });
+    });
+  }
+
   async function setRandomQuote() {
     let quote = FALLBACK_QUOTE;
     try {
       const res = await fetch(chrome.runtime.getURL("quotes.json"));
       const quotes = await res.json();
       if (Array.isArray(quotes) && quotes.length > 0) {
-        quote = quotes[Math.floor(Math.random() * quotes.length)];
+        quote = await pickQuoteNoRepeat(quotes);
       }
     } catch (e) {
       console.warn("[MindGate] Could not load quotes.json, using fallback quote:", e.message);
     }
+
+    // Only text and author are shown. Category exists in the JSON for
+    // internal organization but is never displayed to the user.
     document.getElementById("quote").textContent = quote.text;
     document.getElementById("quote-author").textContent = quote.author;
   }

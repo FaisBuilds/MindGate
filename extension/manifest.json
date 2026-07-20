@@ -2,16 +2,23 @@
   "manifest_version": 3,
   "name": "MindGate",
   "short_name": "MindGate",
-  "description": "Block distracting websites with a calm, premium blocker powered by the MindGate daemon.",
   "version": "0.1.0",
-
+  "description": "A stubborn browser protector. Blocks distractions, protected by a local daemon.",
   "icons": {
     "16": "icons/icon16.png",
     "32": "icons/icon32.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
-  
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
   "permissions": [
     "nativeMessaging",
     "storage",
@@ -34,15 +41,20 @@
       "run_at": "document_start"
     }
   ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "block.html",
+        "block.js",
+        "icons/logo.png"
+      ],
+      "matches": ["<all_urls>"]
+    }
+  ],
   "browser_specific_settings": {
     "gecko": {
       "id": "protector@mindgate.local"
     }
   },
-  "web_accessible_resources": [
-    {
-      "resources": ["block.html", "block.js"],
-      "matches": ["<all_urls>"]
-    }
-  ]
+  "key": "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCUQOd7kwUsviERmgTZBBqQVxcv7ARG0pazopenucORlb6k6Lp09pVacxaNSd7u7L31J6vmlwCsEABbSZM3ABieFkwEkdTO1e+pLPvzjIRyE8721jWBVVsrD96UQ35Vh6LOrwpCPAT7jk92ik8WujT+4bMQzdWZb6xTSGctA5Zo+tcop7CDgFAjjhuQat3DuQFyzpeNAZPnvEliZ/kNe75IHNYD2fa32WZPO0WMREEmwcqEU09hVff3bhopkqVvZMHnEf+oGAUS6G2QAFMExqWoVhSw4ykia3OuV46vGr7MZJG3wvR/7CRvNcPTKRTsFSXH1N7xqFKhcDVTeDFAwGq7AgMBAAECggEASNlBxhe+zbcZkcgghLD/Cpk49BviGBkH43pMUic2gdXWybrwUGQQjNMLrF61tKrRRuN5FURzGJl+S10ygS7Daf8j2IT+UKqQaw2HOqx8MoAoTWOCBCz4sQbJxQoLTKTrK+uYO2a5vhC2XFXnOhBC1VH7hxDV2mElCQGFbXmbUbbdR34SChIrjc3SYHWL6CYc1FcokjiDq/VNRcWxhCT7FWoazU/DZPy9eU7lRWwreKwb6I3xibqhrdGBab3Iozvq6JqX1ld/Vw76MlUZJJznk5DCY9ZCcvTRQmw3EPhX3b6zLsW+Fq+vkMitdJS96etNMwFyxHwVFoN/Awu0aR4pQQKBgQDEFqlvzLVDDCOnQ+fYAElHU2NTK2SVvG8lJwvm+PbP8jHGSv4anthw8tSRnfKXALX9bKqO1U1xDYJljNoSFLvqLK2wqoK3rEEFIdMWWsGYKuI+GbCXtr6fFMBtmJIkUrxF/dl2/EsKlmjj8Xer4vBLJmZblt43eGUBv1ysAioBewKBgQDBjML7QS70bre3rhybXM0Mu9ciRGgDve7c/QQx9W7XdkBHG0fIpblJWrqWuN4Nfn2yOdjSWzr1gsVuWl+UGu+z8oz5c3iJLCS7n3LyI++gn2PWG+Fr+yDzRmRCxbdeCfKBJIrlnuXPXF2ct/oKW0We5mVcclU8mlauZ7VHblXXwQKBgD0IzL6G2li/O43BvjVmiWiRFRZ7KDjPSU0oJTVEgxZgzYtqJkPE85vcibu1jR/hUcRLAZ+p1wv8Z30SZYJBP+h49atKt5tSG37sc1a+8wlZN8iamHPwps6/V9IFLl/t/LpQdFLr3rOx834X1+cBoUfS8QNLJ2neqJntpXvIxKhnAoGAefiO12+Ye4laVXJvrKiqv5+QT5P0SIdlA/aesi0NENMAZs8WSafGQCfg9iLCLJbN94bk0IuVeCpU6Noi6V6gODJeDMVr7GXZMDOnaFilJf/MFp2zTS0Q8r4laL7Yc3apUCELNvEPucFnbN+zvtsN4Lkonz2d4XcRsQ7B+qXZiwECgYEAq6JjQLTCkoPll8keSDEYcptLbWf6SY5ZwWtKPzRBFbVCEEvO+HLwc8NtTK8bZw/0ll1FvacU+5kPmxjX9RI5kj+G91wZfW/d/+J7wNAugz6CyjG6VYPTKvwuIa65yvl2sPItEpTi8Z8cYylnIK6Rr0nmAi95ronV6u2WuDsS3n0="
 }

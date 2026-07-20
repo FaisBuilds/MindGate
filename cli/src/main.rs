@@ -1,11 +1,45 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use mindgate_common::{socket_path, wire, Request, Response, StatusInfo};
+use mindgate_common::{socket_path, wire, Request, Response};
+use std::process::Command;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
+/// MindGate's visual identity: a small set of raw-ANSI helpers.
+/// Respects https://no-color.org
+mod theme {
+    use std::io::IsTerminal;
+
+    const BOLD_PINK: &str = "\x1b[1;38;5;213m";
+    const DIM: &str = "\x1b[2m";
+    const GREEN: &str = "\x1b[32m";
+    const RED: &str = "\x1b[31m";
+    const YELLOW: &str = "\x1b[33m";
+    const RESET: &str = "\x1b[0m";
+
+    fn color_enabled() -> bool {
+        std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal()
+    }
+
+    pub fn bold_pink(s: &str) -> String {
+        if color_enabled() { format!("{BOLD_PINK}{s}{RESET}") } else { s.to_string() }
+    }
+    pub fn dim(s: &str) -> String {
+        if color_enabled() { format!("{DIM}{s}{RESET}") } else { s.to_string() }
+    }
+    pub fn ok(s: &str) -> String {
+        if color_enabled() { format!("{GREEN}✓ {s}{RESET}") } else { format!("✓ {s}") }
+    }
+    pub fn warn(s: &str) -> String {
+        if color_enabled() { format!("{YELLOW}⚠ {s}{RESET}") } else { format!("⚠ {s}") }
+    }
+    pub fn err(s: &str) -> String {
+        if color_enabled() { format!("{RED}✗ {s}{RESET}") } else { format!("✗ {s}") }
+    }
+}
+
 #[derive(Parser, Debug)]
-#[command(name = "mindgate", about = "Modern, open-source Linux focus tool", version)]
+#[command(name = "mindgate", about = "Stubborn browser protector for Linux", version)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -13,564 +47,25 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Block something. Three forms:
-    ///   mindgate add <domain>                 — block a whole site (network layer)
-    ///   mindgate add path <domain>/<path>     — block a path prefix on a site (browser layer)
-    ///   mindgate add keyword <value>          — block any URL/page containing a keyword (browser layer)
-    ///
-    /// There is no site-specific command (no `add-subreddit`, etc), and
-    /// no hyphenated commands (no `add-keyword`, etc) — "path" and
-    /// "keyword" are just the second word after `add`/`remove`. A bare
-    /// value is validated by its shape: something with a `/` is
-    /// treated as a path typed without `path`, something with no `.`
-    /// can't be a domain and is treated as a keyword typed without
-    /// `keyword` — so a mistyped command gets a helpful nudge instead
-    /// of silently landing in the wrong bucket.
-    ///
-    /// Examples:
-    ///   mindgate add youtube.com
-    ///   mindgate add path reddit.com/r/gaming
-    ///   mindgate add keyword nsfw
-    Add {
-        /// A bare domain, or the literal `path`/`keyword` followed by
-        /// the matching value (e.g. `path reddit.com/r/gaming`,
-        /// `keyword nsfw`)
-        #[arg(num_args = 1..=2)]
-        target: Vec<String>,
-    },
-    /// Unblock something. Same forms as `add`:
-    ///   mindgate remove <domain>
-    ///   mindgate remove path <domain>/<path>
-    ///   mindgate remove keyword <value>
-    Remove {
-        /// A bare domain, or the literal `path`/`keyword` followed by
-        /// the matching value
-        #[arg(num_args = 1..=2)]
-        target: Vec<String>,
-    },
-    /// List all currently configured rules
-    List,
-    /// View detailed daemon engine status and ruleset metrics
+    /// Install MindGate (helper for the install script)
+    Install,
+    /// Uninstall MindGate completely
+    Uninstall,
+    /// Start the MindGate daemon
+    Start,
+    /// Stop the MindGate daemon
+    Stop,
+    /// Restart the MindGate daemon
+    Restart,
+    /// Check the status of the daemon and extension
     Status,
-    /// Commit the current ruleset and activate enforcement. THIS
-    /// CANNOT BE UNDONE EARLY — there is no unlock command. The
-    /// ruleset stays frozen until the duration elapses.
-    ///
-    /// DURATION examples: 5min, 4h, 1d, 2w, 6mo, 1y, or `forever`.
-    ///   min = minutes (1-1440)      — mainly for dev/testing
-    ///   h   = hours   (1-168)
-    ///   d   = days    (1-365)
-    ///   w   = weeks   (1-52)
-    ///   mo  = months  (1-12)
-    ///   y   = years   (1-10)
-    Lock {
-        /// e.g. "5min", "4h", "1d", "2w", "6mo", "1y", or "forever"
-        duration: String,
-    },
-    /// Hidden subcommand used by browser extensions to bridge stdio to
-    /// the daemon socket. Explicitly named (rather than left to clap's
-    /// default kebab-case rendering of `NativeBridge`) so it's
-    /// "nativebridge", not "native-bridge" — hidden from --help either
-    /// way, but keeps the CLI's surface hyphen-free even for the one
-    /// subcommand a human never types themselves.
+    /// Run a comprehensive health check of the MindGate setup
+    Doctor,
+    /// View the daemon logs
+    Logs,
+    /// Hidden subcommand used by browser extensions to bridge stdio to the daemon socket
     #[command(name = "nativebridge", hide = true)]
     NativeBridge,
-}
-
-/// Parses a duration string like "5min", "4h", "1d", "2w", "6mo",
-/// "1y", or the literal "forever" into seconds. `None` return value
-/// means "forever" (no timer — matches `Request::Lock`'s
-/// `duration_secs: Option<u64>`, where `None` already means untimed).
-/// Every unit has an explicit range; out-of-range or unrecognized
-/// input is rejected here, client-side, before it ever reaches the
-/// daemon — there's no reason to round-trip a socket call for input
-/// that's already obviously invalid.
-///
-/// NOTE: months is `mo`, not `m` — `m` was ambiguous with minutes.
-/// If you have scripts using the old `6m` = "6 months" form, update
-/// them to `6mo`.
-fn parse_duration(input: &str) -> Result<Option<u64>, String> {
-    let trimmed = input.trim();
-    if trimmed.eq_ignore_ascii_case("forever") {
-        return Ok(None);
-    }
-
-    let (num_str, unit) = trimmed.split_at(
-        trimmed
-            .find(|c: char| !c.is_ascii_digit())
-            .ok_or_else(|| format!("'{trimmed}' is missing a unit (e.g. 5min, 4h, 1d, 2w, 6mo, 1y)"))?,
-    );
-
-    let n: u64 = num_str
-        .parse()
-        .map_err(|_| format!("'{num_str}' isn't a valid number"))?;
-
-    if n == 0 {
-        return Err("duration must be at least 1".to_string());
-    }
-
-    const MINUTE: u64 = 60;
-    const HOUR: u64 = 3600;
-    const DAY: u64 = 24 * HOUR;
-    const WEEK: u64 = 7 * DAY;
-    const MONTH: u64 = 30 * DAY;
-    const YEAR: u64 = 365 * DAY;
-
-    let (seconds, max, unit_name) = match unit {
-        "min" => (n * MINUTE, 1440, "minutes"),
-        "h" => (n * HOUR, 168, "hours"),
-        "d" => (n * DAY, 365, "days"),
-        "w" => (n * WEEK, 52, "weeks"),
-        "mo" => (n * MONTH, 12, "months"),
-        "y" => (n * YEAR, 10, "years"),
-        other => {
-            return Err(format!(
-                "unrecognized unit '{other}' — use min, h, d, w, mo, y, or the word 'forever'"
-            ))
-        }
-    };
-
-    if n > max {
-        return Err(format!("{n}{unit} is out of range — max is {max} {unit_name}"));
-    }
-
-    Ok(Some(seconds))
-}
-
-/// Lightweight domain sanity check — not a full RFC 1035 validator,
-/// just enough to catch the actual mistakes people make: a bare word
-/// with no TLD ("procrastination"), a full URL ("https://reddit.com"),
-/// or something with a path/query tacked on ("reddit.com/r/gaming"
-/// where a bare domain was expected). Deliberately permissive on
-/// anything that's actually shaped like a domain — this isn't trying
-/// to reject domains that don't exist, only inputs that clearly aren't
-/// domains at all.
-fn is_valid_domain(s: &str) -> bool {
-    let s = s.trim();
-    if s.is_empty() || s.contains(char::is_whitespace) {
-        return false;
-    }
-    if s.contains("://") || s.contains('/') {
-        return false;
-    }
-    let labels: Vec<&str> = s.split('.').collect();
-    // Needs at least "name.tld" — a bare word has no dot at all.
-    if labels.len() < 2 {
-        return false;
-    }
-    for label in &labels {
-        if label.is_empty() {
-            return false;
-        }
-        if !label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
-            return false;
-        }
-        if label.starts_with('-') || label.ends_with('-') {
-            return false;
-        }
-    }
-    let tld = labels.last().unwrap();
-    tld.len() >= 2 && tld.chars().all(|c| c.is_ascii_alphabetic())
-}
-
-/// If `value` looks like a domain or a domain/path — used to catch the
-/// "typed the wrong subcommand" mistake when validating a keyword, e.g.
-/// `mindgate add keyword youtube.com` was almost certainly meant to be
-/// `mindgate add youtube.com`.
-fn looks_like_domain_or_path(value: &str) -> Option<&'static str> {
-    if let Some(slash_idx) = value.find('/') {
-        if is_valid_domain(&value[..slash_idx]) {
-            return Some("path");
-        }
-    }
-    if is_valid_domain(value) {
-        return Some("website");
-    }
-    None
-}
-
-/// What `add`/`remove`'s trailing args resolved to.
-#[derive(Debug)]
-enum Target {
-    /// `mindgate add youtube.com` — whole-domain, network-layer block.
-    Website(String),
-    /// `mindgate add path reddit.com/r/gaming` — domain-scoped
-    /// path-prefix, browser-layer block.
-    Path { domain: String, path: String },
-    /// `mindgate add keyword nsfw` — URL/page-content keyword,
-    /// browser-layer block.
-    Keyword(String),
-}
-
-/// Parses the `Vec<String>` collected by clap for `add`/`remove` into
-/// a `Target`. A bare domain (`mindgate add youtube.com`) is still the
-/// default, no literal needed — `path`/`keyword` remain explicit
-/// literals since a bare value can't tell you "block this path" or
-/// "block this keyword" on its own. Validation still runs on the bare
-/// form by reading its shape: a `/` means it's a path typed in the
-/// wrong place, no `.` means it can't be a domain at all (probably a
-/// keyword), otherwise it's checked as a domain.
-fn parse_target(args: &[String]) -> Result<Target, String> {
-    match args {
-        [] => Err(
-            "expected a domain, `path <domain>/<path>`, or `keyword <value>` — e.g. \
-             `mindgate add youtube.com`, `mindgate add path reddit.com/r/gaming`, or \
-             `mindgate add keyword nsfw`"
-                .to_string(),
-        ),
-        [literal, value] if literal.eq_ignore_ascii_case("path") => {
-            let (domain, path) = split_domain_path(value)?;
-            if !is_valid_domain(&domain) {
-                return Err(format!(
-                    "Invalid domain in '{value}'.\nExample: reddit.com/r/gaming"
-                ));
-            }
-            Ok(Target::Path { domain, path })
-        }
-        [literal, value] if literal.eq_ignore_ascii_case("keyword") => {
-            if let Some(shape) = looks_like_domain_or_path(value) {
-                let suggestion = if shape == "path" {
-                    format!("mindgate add path {value}")
-                } else {
-                    format!("mindgate add {value}")
-                };
-                return Err(format!("That looks like a {shape}.\n\nUse:\n\n{suggestion}"));
-            }
-            Ok(Target::Keyword(value.clone()))
-        }
-        [only] => classify_bare_input(only),
-        _ => Err(format!(
-            "unrecognized arguments '{}' — usage: `mindgate add <domain>`, \
-             `mindgate add path <domain>/<path>`, or `mindgate add keyword <value>`",
-            args.join(" ")
-        )),
-    }
-}
-
-/// Classifies a single bare argument to `add`/`remove` by shape:
-///   contains '/'   -> almost certainly a path typed without `path`
-///   no '.' at all  -> can't be a domain; probably meant as a keyword
-///   otherwise      -> validated as a domain
-fn classify_bare_input(input: &str) -> Result<Target, String> {
-    let trimmed = input.trim();
-
-    // "path"/"keyword" typed alone with nothing after them are usage
-    // errors, not domains named "path" or "keyword".
-    if trimmed.eq_ignore_ascii_case("path") {
-        return Err(
-            "`path` needs a `<domain>/<path>` argument, e.g. \
-             `mindgate add path reddit.com/r/gaming`"
-                .to_string(),
-        );
-    }
-    if trimmed.eq_ignore_ascii_case("keyword") {
-        return Err("`keyword` needs a value, e.g. `mindgate add keyword nsfw`".to_string());
-    }
-
-    if trimmed.contains('/') {
-        return Err(format!(
-            "That looks like a path.\n\nUse:\n\nmindgate add path {trimmed}"
-        ));
-    }
-
-    if !trimmed.contains('.') {
-        return Err(format!(
-            "That doesn't look like a website.\n\nDid you mean?\n\nmindgate add keyword {trimmed}"
-        ));
-    }
-
-    let domain = trimmed.to_lowercase();
-    if !is_valid_domain(&domain) {
-        return Err("Invalid domain.\nExample: youtube.com".to_string());
-    }
-    Ok(Target::Website(domain))
-}
-
-/// Splits a combined `domain/path` string like `reddit.com/r/gaming`
-/// into `("reddit.com", "/r/gaming")`. The path keeps its leading `/`
-/// (matches the shape `PathRule.path` and `content.js`'s prefix check
-/// already expect). Domain is lowercased for consistent dedup against
-/// whatever's already staged; the path's case is left alone since some
-/// sites' paths are case-sensitive.
-fn split_domain_path(combined: &str) -> Result<(String, String), String> {
-    let trimmed = combined.trim();
-    let slash_idx = trimmed.find('/').ok_or_else(|| {
-        format!(
-            "'{trimmed}' needs a path — e.g. `mindgate add path {trimmed}/r/gaming`"
-        )
-    })?;
-
-    let domain = &trimmed[..slash_idx];
-    let path = &trimmed[slash_idx..]; // keeps the leading '/'
-
-    if domain.is_empty() {
-        return Err(format!("'{trimmed}' is missing a domain before the path"));
-    }
-    if path.len() <= 1 {
-        return Err(format!(
-            "'{trimmed}' is missing a path after the domain — e.g. \
-             `mindgate add path {domain}/r/gaming`"
-        ));
-    }
-
-    Ok((domain.to_lowercase(), path.to_string()))
-}
-
-#[cfg(test)]
-mod target_parsing_tests {
-    use super::*;
-
-    #[test]
-    fn bare_domain_is_a_website_target() {
-        match parse_target(&["youtube.com".to_string()]).unwrap() {
-            Target::Website(d) => assert_eq!(d, "youtube.com"),
-            _ => panic!("expected Website"),
-        }
-    }
-
-    #[test]
-    fn bare_domain_is_lowercased() {
-        match parse_target(&["YouTube.com".to_string()]).unwrap() {
-            Target::Website(d) => assert_eq!(d, "youtube.com"),
-            _ => panic!("expected Website"),
-        }
-    }
-
-    #[test]
-    fn bare_word_with_no_dot_suggests_keyword() {
-        let err = parse_target(&["procrastination".to_string()]).unwrap_err();
-        assert!(err.contains("doesn't look like a website"));
-        assert!(err.contains("mindgate add keyword procrastination"));
-    }
-
-    #[test]
-    fn bare_value_with_slash_suggests_path() {
-        let err = parse_target(&["reddit.com/r/gaming".to_string()]).unwrap_err();
-        assert!(err.contains("looks like a path"));
-        assert!(err.contains("mindgate add path reddit.com/r/gaming"));
-    }
-
-    #[test]
-    fn bare_full_url_is_rejected() {
-        // Has a '/', so it's caught by the path-shape check before it
-        // ever reaches domain validation.
-        assert!(parse_target(&["https://www.reddit.com/r/gaming/".to_string()]).is_err());
-    }
-
-    #[test]
-    fn path_literal_splits_domain_and_path() {
-        match parse_target(&["path".to_string(), "reddit.com/r/gaming".to_string()]).unwrap() {
-            Target::Path { domain, path } => {
-                assert_eq!(domain, "reddit.com");
-                assert_eq!(path, "/r/gaming");
-            }
-            _ => panic!("expected Path"),
-        }
-    }
-
-    #[test]
-    fn path_literal_is_case_insensitive() {
-        assert!(parse_target(&["PATH".to_string(), "x.com/foo".to_string()]).is_ok());
-    }
-
-    #[test]
-    fn path_preserves_nested_prefix() {
-        match parse_target(&["path".to_string(), "youtube.com/shorts".to_string()]).unwrap() {
-            Target::Path { domain, path } => {
-                assert_eq!(domain, "youtube.com");
-                assert_eq!(path, "/shorts");
-            }
-            _ => panic!("expected Path"),
-        }
-    }
-
-    #[test]
-    fn path_with_invalid_domain_portion_is_rejected() {
-        // "gaming/r/whatever" — the part before the slash isn't a
-        // valid domain at all.
-        assert!(parse_target(&["path".to_string(), "gaming/r/whatever".to_string()]).is_err());
-    }
-
-    #[test]
-    fn keyword_literal_captures_value() {
-        match parse_target(&["keyword".to_string(), "nsfw".to_string()]).unwrap() {
-            Target::Keyword(value) => assert_eq!(value, "nsfw"),
-            _ => panic!("expected Keyword"),
-        }
-    }
-
-    #[test]
-    fn keyword_literal_is_case_insensitive() {
-        assert!(parse_target(&["KEYWORD".to_string(), "nsfw".to_string()]).is_ok());
-    }
-
-    #[test]
-    fn bare_keyword_literal_with_no_value_is_rejected() {
-        assert!(parse_target(&["keyword".to_string()]).is_err());
-    }
-
-    #[test]
-    fn keyword_that_is_actually_a_domain_is_rejected() {
-        let err =
-            parse_target(&["keyword".to_string(), "youtube.com".to_string()]).unwrap_err();
-        assert!(err.contains("looks like a website"));
-        assert!(err.contains("mindgate add youtube.com"));
-    }
-
-    #[test]
-    fn keyword_that_is_actually_a_domain_path_is_rejected() {
-        let err = parse_target(&[
-            "keyword".to_string(),
-            "reddit.com/r/gaming".to_string(),
-        ])
-        .unwrap_err();
-        assert!(err.contains("looks like a path"));
-        assert!(err.contains("mindgate add path reddit.com/r/gaming"));
-    }
-
-    #[test]
-    fn ordinary_keyword_passes_through_unchanged() {
-        for value in ["minecraft", "pizza", "porn", "gambling"] {
-            match parse_target(&["keyword".to_string(), value.to_string()]).unwrap() {
-                Target::Keyword(v) => assert_eq!(v, value),
-                _ => panic!("expected Keyword"),
-            }
-        }
-    }
-
-    #[test]
-    fn path_without_domain_slash_path_is_rejected() {
-        // "path reddit.com" alone has no '/' to split on.
-        assert!(parse_target(&["path".to_string(), "reddit.com".to_string()]).is_err());
-    }
-
-    #[test]
-    fn bare_path_literal_with_no_second_arg_is_rejected() {
-        assert!(parse_target(&["path".to_string()]).is_err());
-    }
-
-    #[test]
-    fn no_args_is_rejected() {
-        assert!(parse_target(&[]).is_err());
-    }
-
-    #[test]
-    fn too_many_args_is_rejected() {
-        assert!(parse_target(&[
-            "path".to_string(),
-            "reddit.com/r/gaming".to_string(),
-            "extra".to_string()
-        ])
-        .is_err());
-    }
-}
-
-#[cfg(test)]
-mod domain_validation_tests {
-    use super::*;
-
-    #[test]
-    fn accepts_ordinary_domains() {
-        for d in ["youtube.com", "x.com", "reddit.com", "sub.example.co.uk"] {
-            assert!(is_valid_domain(d), "expected '{d}' to be valid");
-        }
-    }
-
-    #[test]
-    fn rejects_bare_word_with_no_tld() {
-        assert!(!is_valid_domain("procrastination"));
-    }
-
-    #[test]
-    fn rejects_full_url() {
-        assert!(!is_valid_domain("https://www.reddit.com/r/gaming/"));
-    }
-
-    #[test]
-    fn rejects_domain_with_path() {
-        assert!(!is_valid_domain("reddit.com/r/gaming"));
-    }
-
-    #[test]
-    fn rejects_empty_and_whitespace() {
-        assert!(!is_valid_domain(""));
-        assert!(!is_valid_domain("   "));
-        assert!(!is_valid_domain("you tube.com"));
-    }
-
-    #[test]
-    fn rejects_leading_or_trailing_hyphen_label() {
-        assert!(!is_valid_domain("-youtube.com"));
-        assert!(!is_valid_domain("youtube-.com"));
-    }
-}
-
-fn format_duration_human(input: &str, seconds: Option<u64>) -> String {
-    match seconds {
-        None => "forever".to_string(),
-        Some(_) => input.to_string(),
-    }
-}
-
-#[cfg(test)]
-mod duration_tests {
-    use super::*;
-
-    #[test]
-    fn parses_minutes() {
-        assert_eq!(parse_duration("5min"), Ok(Some(300)));
-    }
-
-    #[test]
-    fn parses_hours() {
-        assert_eq!(parse_duration("4h"), Ok(Some(4 * 3600)));
-    }
-
-    #[test]
-    fn parses_months_as_mo_not_m() {
-        assert_eq!(parse_duration("6mo"), Ok(Some(6 * 30 * 86400)));
-    }
-
-    #[test]
-    fn old_bare_m_unit_is_now_rejected() {
-        // Regression guard: `m` used to mean months, which collided
-        // with the intuitive reading of `m` as minutes. It must now
-        // be rejected outright rather than silently reinterpreted.
-        assert!(parse_duration("6m").is_err());
-    }
-
-    #[test]
-    fn seconds_unit_is_not_supported() {
-        // Explicitly not supported — minutes is the shortest unit.
-        assert!(parse_duration("30s").is_err());
-    }
-
-    #[test]
-    fn parses_forever() {
-        assert_eq!(parse_duration("forever"), Ok(None));
-        assert_eq!(parse_duration("FOREVER"), Ok(None));
-    }
-
-    #[test]
-    fn rejects_zero() {
-        assert!(parse_duration("0min").is_err());
-    }
-
-    #[test]
-    fn rejects_out_of_range() {
-        assert!(parse_duration("2000min").is_err()); // max is 1440
-        assert!(parse_duration("999h").is_err()); // max is 168
-    }
-
-    #[test]
-    fn rejects_unknown_unit() {
-        assert!(parse_duration("5x").is_err());
-    }
-
-    #[test]
-    fn rejects_missing_unit() {
-        assert!(parse_duration("5").is_err());
-    }
 }
 
 #[tokio::main]
@@ -578,124 +73,58 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::NativeBridge => {
-            run_native_bridge().await?;
+        Commands::Install => run_install().await?,
+        Commands::Uninstall => run_uninstall().await?,
+        Commands::Start => run_systemctl_command("start", "mindgated.service").await?,
+        Commands::Stop => {
+            let _ = send_shutdown_request().await; // Graceful shutdown
+            run_systemctl_command("stop", "mindgated.service").await?;
         }
-        Commands::Lock { duration } => {
-            let duration_secs = match parse_duration(&duration) {
-                Ok(d) => d,
-                Err(msg) => {
-                    eprintln!("Error: {msg}");
-                    std::process::exit(1);
-                }
-            };
-
-            if duration_secs.is_none() {
-                // `forever` has no timer and no unlock command — this
-                // is the one place in the whole CLI where we slow the
-                // user down on purpose rather than just doing the
-                // thing. Three separate, distinctly-worded
-                // confirmations, not one dialog with a checkbox: each
-                // one has to be actively re-read and re-typed, which
-                // is the point — friction here is intentional, matching
-                // MindGate's own stated philosophy, not an oversight.
-                if !confirm(
-                    "⚠️  You are about to lock your ruleset FOREVER. \
-                     There is no unlock command. Continue? [y/N] ",
-                )? {
-                    println!("Cancelled.");
-                    return Ok(());
-                }
-                if !confirm(
-                    "⚠️  This is permanent. The only way out is deleting \
-                     and reinstalling MindGate. Are you sure? [y/N] ",
-                )? {
-                    println!("Cancelled.");
-                    return Ok(());
-                }
-                if !confirm(
-                    "⚠️  Last chance. Type y to lock this ruleset forever, \
-                     with no way back: [y/N] ",
-                )? {
-                    println!("Cancelled.");
-                    return Ok(());
-                }
-            }
-
-            let req = Request::Lock { duration_secs };
-            match send_request_and_print_lock(req, &duration, duration_secs).await {
-                Ok(()) => {}
-                Err(e) => {
-                    eprintln!("Error: {e:#}");
-                    std::process::exit(1);
-                }
-            }
-        }
-        cmd => {
-            let req = match cmd {
-                Commands::Add { target } => match parse_target(&target) {
-                    Ok(Target::Website(domain)) => Request::AddWebsite { domain },
-                    Ok(Target::Path { domain, path }) => Request::AddPath { domain, path },
-                    Ok(Target::Keyword(value)) => Request::AddKeyword { value },
-                    Err(msg) => {
-                        eprintln!("Error: {msg}");
-                        std::process::exit(1);
-                    }
-                },
-                Commands::Remove { target } => match parse_target(&target) {
-                    Ok(Target::Website(domain)) => Request::RemoveWebsite { domain },
-                    Ok(Target::Path { domain, path }) => Request::RemovePath { domain, path },
-                    Ok(Target::Keyword(value)) => Request::RemoveKeyword { value },
-                    Err(msg) => {
-                        eprintln!("Error: {msg}");
-                        std::process::exit(1);
-                    }
-                },
-                Commands::List => Request::List,
-                Commands::Status => Request::Status,
-                _ => unreachable!(),
-            };
-
-            if let Err(e) = send_request_and_print(req).await {
-                eprintln!("Error: {e:#}");
-                std::process::exit(1);
-            }
-        }
+        Commands::Restart => run_systemctl_command("restart", "mindgated.service").await?,
+        Commands::Status => run_status().await?,
+        Commands::Doctor => run_doctor().await?,
+        Commands::Logs => run_logs().await?,
+        Commands::NativeBridge => run_native_bridge().await?,
     }
 
     Ok(())
 }
 
-/// Prompts `prompt` and reads a line from stdin, returning true only
-/// for an explicit "y" or "yes" (case-insensitive). Anything else —
-/// including just pressing Enter — is a no, matching the `[y/N]`
-/// convention shown in the prompt text.
-fn confirm(prompt: &str) -> Result<bool> {
-    use std::io::Write;
-    print!("{prompt}");
-    std::io::stdout().flush().ok();
-    let mut line = String::new();
-    std::io::stdin().read_line(&mut line)?;
-    let answer = line.trim().to_ascii_lowercase();
-    Ok(answer == "y" || answer == "yes")
+async fn run_systemctl_command(action: &str, unit: &str) -> Result<()> {
+    let status = Command::new("systemctl")
+        .args([action, unit])
+        .status()
+        .context("failed to execute systemctl")?;
+
+    if !status.success() {
+        anyhow::bail!(
+            "systemctl {} {} failed. You may need to run this command with sudo.",
+            action,
+            unit
+        );
+    }
+    println!("{}", theme::ok(&format!("MindGate {} successfully.", action)));
+    Ok(())
 }
 
-/// Same wire round-trip as `send_request_and_print`, but with a
-/// success message specific to locking, since "✓ Operation succeeded."
-/// doesn't convey what actually just happened (enforcement activating,
-/// permanently or for a set duration) the way it should for the one
-/// command in this CLI that can't be undone.
-async fn send_request_and_print_lock(
-    req: Request,
-    duration_input: &str,
-    duration_secs: Option<u64>,
-) -> Result<()> {
+async fn send_shutdown_request() -> Result<()> {
+    let path = socket_path();
+    let mut stream = match UnixStream::connect(&path).await {
+        Ok(s) => s,
+        Err(_) => return Ok(()), // Daemon not running, nothing to shut down gracefully
+    };
+    let payload = wire::encode(&Request::Shutdown)?;
+    let _ = stream.write_all(&payload).await;
+    Ok(())
+}
+
+async fn run_status() -> Result<()> {
     let path = socket_path();
     let mut stream = UnixStream::connect(&path)
         .await
-        .with_context(|| format!("Could not connect to daemon at {}", path.display()))?;
+        .with_context(|| format!("Could not connect to daemon at {}. Is it running?", path.display()))?;
 
-    let payload = wire::encode(&req)?;
+    let payload = wire::encode(&Request::Status)?;
     stream.write_all(&payload).await?;
 
     let mut len_buf = [0u8; 4];
@@ -706,182 +135,193 @@ async fn send_request_and_print_lock(
 
     let response: Response = wire::decode(&body)?;
     match response {
-        Response::Ok => {
-            println!(
-                "🔒 Locked — {}. Enforcement is now active. This cannot be undone early.",
-                format_duration_human(duration_input, duration_secs)
-            );
+        Response::Status(status) => {
+            println!("{}", theme::bold_pink("--- MindGate Status ---"));
+            println!("Daemon Running:      {}", if status.daemon_running { theme::ok("YES") } else { theme::err("NO") });
+            println!("Extension Connected: {}", if status.extension_connected { theme::ok("YES") } else { theme::err("NO") });
         }
         Response::Error { message } => anyhow::bail!("{message}"),
-        other => {
-            // Lock only ever responds Ok/Error server-side, but handle
-            // the rest rather than silently dropping them if that
-            // changes later.
-            println!("{other:?}");
-        }
+        _ => anyhow::bail!("Unexpected response from daemon"),
     }
     Ok(())
 }
 
-/// Connects to the daemon's Unix socket, transmits the request payload,
-/// and processes the response into a readable visual CLI format.
-async fn send_request_and_print(req: Request) -> Result<()> {
+async fn run_doctor() -> Result<()> {
+    println!("{}", theme::bold_pink("--- MindGate Doctor ---"));
+
+    // 1. Daemon running
+    let daemon_running = check_systemctl_active("mindgated.service").await;
+    if daemon_running {
+        println!("{}", theme::ok("Daemon running"));
+    } else {
+        println!("{}", theme::err("Daemon not running"));
+    }
+
+    // 2. Watchdog running
+    let watchdog_running = check_systemctl_active("mindgate-watchdog.service").await;
+    if watchdog_running {
+        println!("{}", theme::ok("Watchdog running"));
+    } else {
+        println!("{}", theme::warn("Watchdog not running"));
+    }
+
+    // 3. Native Messaging installed
+    let nm_installed = check_native_messaging().await;
+    if nm_installed {
+        println!("{}", theme::ok("Native Messaging installed"));
+    } else {
+        println!("{}", theme::warn("Native Messaging not installed"));
+    }
+
+    // 4, 5, 6. Extension connected & Heartbeat healthy (from daemon)
     let path = socket_path();
-    let mut stream = UnixStream::connect(&path)
-        .await
-        .with_context(|| format!("Could not connect to daemon at {}", path.display()))?;
-
-    // Send the length-prefixed request
-    let payload = wire::encode(&req)?;
-    stream.write_all(&payload).await?;
-
-    // Read the 4-byte length prefix of response
-    let mut len_buf = [0u8; 4];
-    stream.read_exact(&mut len_buf).await?;
-    let len = u32::from_be_bytes(len_buf) as usize;
-
-    // Read response body
-    let mut body = vec![0u8; len];
-    stream.read_exact(&mut body).await?;
-
-    let response: Response = wire::decode(&body)?;
-    match response {
-        Response::Ok => {
-            println!("✓ Operation succeeded.");
-        }
-        Response::Error { message } => {
-            anyhow::bail!("{message}");
-        }
-        Response::Rules(rules) => {
-            println!("--- MindGate Rule Set ---");
-            println!("\n[Websites (Network Layer)]");
-            if rules.websites.is_empty() {
-                println!("  (None)");
+    if let Ok(mut stream) = UnixStream::connect(&path).await {
+        let payload = wire::encode(&Request::Status).unwrap();
+        let _ = stream.write_all(&payload).await;
+        let mut len_buf = [0u8; 4];
+        if stream.read_exact(&mut len_buf).await.is_ok() {
+            let len = u32::from_be_bytes(len_buf) as usize;
+            let mut body = vec![0u8; len];
+            if stream.read_exact(&mut body).await.is_ok() {
+                if let Ok(Response::Status(status)) = wire::decode(&body) {
+                    if status.extension_connected {
+                        println!("{}", theme::ok("Extension connected"));
+                        println!("{}", theme::ok("Heartbeat healthy"));
+                    } else {
+                        println!("{}", theme::warn("Extension connected: NO (Heartbeat missing)"));
+                    }
+                } else {
+                    println!("{}", theme::warn("Extension connected: NO (Invalid response)"));
+                }
             } else {
-                for w in rules.websites {
-                    println!("  * {}", w.domain);
-                }
+                println!("{}", theme::warn("Extension connected: NO (Read error)"));
             }
-
-            println!("\n[Keywords (Browser Layer)]");
-            if rules.keywords.is_empty() {
-                println!("  (None)");
-            } else {
-                for k in rules.keywords {
-                    println!("  * {}", k.value);
-                }
-            }
-
-            // No Reddit-specific section here by design — `paths` is
-            // the one general mechanism (domain + path prefix), and
-            // covers reddit.com/r/gaming exactly the same way it
-            // covers youtube.com/shorts. Any LEGACY `rules.subreddits`
-            // entries (from before this command existed) are folded
-            // in here too, displayed as the equivalent reddit.com/r/
-            // path, so nothing from an older rules.toml goes missing.
-            println!("\n[Paths (Browser Layer)]");
-            if rules.paths.is_empty() && rules.subreddits.is_empty() {
-                println!("  (None)");
-            } else {
-                for p in &rules.paths {
-                    println!("  * {}{}", p.domain, p.path);
-                }
-                for s in &rules.subreddits {
-                    println!("  * reddit.com/r/{} (legacy)", s.subreddit);
-                }
-            }
+        } else {
+            println!("{}", theme::warn("Extension connected: NO (Read error)"));
         }
-        Response::Status(status) => {
-            print_status_info(status);
-        }
+    } else {
+        println!("{}", theme::warn("Extension connected: NO (Daemon unreachable)"));
     }
 
+    // 7. Browser detected
+    let browsers = ["google-chrome", "chromium", "chromium-browser", "brave-browser", "microsoft-edge", "vivaldi", "opera"];
+    let mut found_browser = false;
+    for browser in browsers {
+        if Command::new("which").arg(browser).output().is_ok_and(|o| o.status.success()) {
+            found_browser = true;
+            break;
+        }
+    }
+    if found_browser {
+        println!("{}", theme::ok("Browser detected"));
+    } else {
+        println!("{}", theme::warn("No supported Chromium browser detected"));
+    }
+
+    // 8. Manual reminders (as per MVP1 spec)
+    println!("{}", theme::warn("Reminder: Ensure 'Allow in Incognito' is enabled in chrome://extensions"));
+    println!("{}", theme::warn("Reminder: Load extension in all browser profiles you wish to protect"));
+
+    println!("\n{}", theme::dim("Run `mindgate status` for more details."));
     Ok(())
 }
 
-fn format_seconds_human(seconds: u64) -> String {
-    let days = seconds / 86400;
-    let hours = (seconds % 86400) / 3600;
-    let minutes = (seconds % 3600) / 60;
-    if days > 0 {
-        format!("{days}d {hours}h")
-    } else if hours > 0 {
-        format!("{hours}h {minutes}m")
-    } else {
-        format!("{minutes}m")
-    }
+async fn check_systemctl_active(unit: &str) -> bool {
+    Command::new("systemctl")
+        .args(["is-active", "--quiet", unit])
+        .status() // <-- Removed .await here
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
-fn print_status_info(status: StatusInfo) {
-    println!("--- MindGate Daemon Status ---");
-    println!("Daemon Running:       {}", if status.daemon_running { "YES" } else { "NO" });
-    println!("nftables Active:      {}", if status.nft_table_active { "YES" } else { "NO (Dry-run mode active)" });
-    println!("Extension Connected:  {}", if status.extension_connected { "YES" } else { "NO (Check browser background)" });
-    let lock_detail = if !status.lock.locked {
-        "NO".to_string()
-    } else {
-        match status.lock.unlock_at {
-            Some(unlock_at) => {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                let remaining = unlock_at.saturating_sub(now);
-                format!("YES ({} remaining)", format_seconds_human(remaining))
-            }
-            None => "YES (forever — no unlock)".to_string(),
+async fn check_native_messaging() -> bool {
+    let paths = [
+        "/etc/opt/chrome/native-messaging-hosts/com.mindgate.protector.json",
+        "/etc/chromium/native-messaging-hosts/com.mindgate.protector.json",
+    ];
+    for p in paths {
+        if std::path::Path::new(p).exists() {
+            return true;
         }
-    };
-    println!("Active Locks:         {lock_detail}");
-    println!("\n[Metrics]");
-    println!("Total Rules:          {}", status.rule_count);
-    println!("  - Websites:         {}", status.website_count);
-    // Combined: `path_count` (the current mechanism) plus
-    // `subreddit_count` (legacy entries from before `add path`
-    // existed) — both are enforced the same way, so they're shown as
-    // one number rather than a Reddit-specific line item.
-    println!("  - Paths:            {}", status.path_count + status.subreddit_count);
-    println!("  - Keywords:         {}", status.keyword_count);
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let user_path = std::path::Path::new(&home).join(".config/google-chrome/NativeMessagingHosts/com.mindgate.protector.json");
+        if user_path.exists() {
+            return true;
+        }
+    }
+    false
+}
+
+async fn run_install() -> Result<()> {
+    println!("{}", theme::dim("MindGate is typically installed via: curl -fsSL https://... | bash"));
+    println!("{}", theme::dim("If you are running from a source checkout, run: sudo ./installer/install.sh"));
+    Ok(())
+}
+
+async fn run_uninstall() -> Result<()> {
+    println!("{}", theme::warn("This will remove MindGate completely. Continue? [y/N]"));
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input).context("failed to read input")?;
+    if !input.trim().eq_ignore_ascii_case("y") && !input.trim().eq_ignore_ascii_case("yes") {
+        println!("Cancelled.");
+        return Ok(());
+    }
+
+    let status = Command::new("sudo")
+        .arg("/usr/local/bin/mindgate-uninstall.sh")
+        .status()
+        .context("failed to execute uninstall script")?;
+
+    if !status.success() {
+        anyhow::bail!("Uninstall failed. You may need to run `sudo ./installer/uninstall.sh` manually.");
+    }
+    Ok(())
+}
+
+async fn run_logs() -> Result<()> {
+    let status = Command::new("journalctl")
+        .args(["-u", "mindgated.service", "-f"])
+        .status()
+        .context("failed to execute journalctl")?;
+    
+    if !status.success() {
+        anyhow::bail!("Failed to read logs. You may need to run this command with sudo.");
+    }
+    Ok(())
 }
 
 /// The Native Messaging Bridge Mode. Runs inside browser-spawned processes.
-/// Directly bridges standard input/output streams to the daemon's Unix socket
-/// using length-prefixed protocol forwarding.
+/// Translates between the browser's native-endian length-prefixed JSON
+/// and the daemon's big-endian wire protocol.
 async fn run_native_bridge() -> Result<()> {
     let path = socket_path();
     let socket = UnixStream::connect(&path)
-    .await
+        .await
         .with_context(|| format!("Bridge mode failed to connect to daemon socket at {}", path.display()))?;
 
     let mut stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();
-
-    // Use a split-task approach to concurrently route stdin -> socket and socket -> stdout
     let (mut rx, mut tx) = socket.into_split();
 
     let client_to_daemon = async {
         let mut len_buf = [0u8; 4];
         loop {
-            // Read length prefix from Browser via stdin
             if stdin.read_exact(&mut len_buf).await.is_err() {
-                break; // EOF or broken stdin (Browser closed tab/extension crashed)
+                break; // EOF or broken stdin
             }
-            let len = u32::from_ne_bytes(len_buf) as usize; // WebExtensions send standard native endianness
-            
+            let len = u32::from_ne_bytes(len_buf) as usize;
             let mut body = vec![0u8; len];
             if stdin.read_exact(&mut body).await.is_err() {
                 break;
             }
 
-            // Parse request to make sure it's valid, then convert native-endian to daemon's Big-Endian wire frame
-            let req: Result<Request, _> = serde_json::from_slice(&body);
-            if let Ok(request) = req {
-                let wire_payload = match wire::encode(&request) {
-                    Ok(p) => p,
-                    Err(_) => break,
-                };
-                if tx.write_all(&wire_payload).await.is_err() {
-                    break;
+            // Parse request from browser, then convert to daemon's Big-Endian wire frame
+            if let Ok(request) = serde_json::from_slice::<Request>(&body) {
+                if let Ok(wire_payload) = wire::encode(&request) {
+                    if tx.write_all(&wire_payload).await.is_err() {
+                        break;
+                    }
                 }
             }
         }
@@ -891,12 +331,10 @@ async fn run_native_bridge() -> Result<()> {
     let daemon_to_client = async {
         let mut len_buf = [0u8; 4];
         loop {
-            // Read Big-Endian length from the daemon's Unix socket
             if rx.read_exact(&mut len_buf).await.is_err() {
                 break; // Socket closed by daemon
             }
             let len = u32::from_be_bytes(len_buf) as usize;
-
             let mut body = vec![0u8; len];
             if rx.read_exact(&mut body).await.is_err() {
                 break;
@@ -915,8 +353,6 @@ async fn run_native_bridge() -> Result<()> {
         anyhow::Ok(())
     };
 
-    // Keep active until either standard input or socket gets closed
     let _ = tokio::try_join!(client_to_daemon, daemon_to_client);
-
     Ok(())
 }

@@ -9,3 +9,12 @@
 
 # OS cruft
 .DS_Store
+
+# Extension private key — CRITICAL: never commit secrets
+*.pem
+
+# Packed extension files — too large for GitHub, and contain the private key
+*.crx
+
+# Bridge error log — written at runtime by mindgate-bridge.sh
+*.log

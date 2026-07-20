@@ -9,21 +9,21 @@ Restart=always
 RestartSec=2
 
 # Kill the whole cgroup on stop, not just the main PID, so a forced
-# stop can't leave an orphaned dnsmasq child behind believing it's
-# still supposed to be running. engine.rs's own ensure_port_clear is
-# still the last-resort backstop for the cases this doesn't cover
-# (e.g. an ungraceful `kill -9` of the whole machine's mindgated
-# process tree between reboots).
+# stop can't leave orphaned child processes behind.
 KillMode=control-group
 
-# Root is required: engine.rs shells out to `nft` and binds a
-# loopback dnsmasq that nftables then redirects system DNS traffic to
-# — both need root in practice on a normal desktop install.
+# Root is required: the daemon needs to send signals to browser processes
+# owned by other users (via pkill in guardian.rs).
 User=root
 
-# Environment overrides for local dev/testing live in
-# /etc/mindgate/env if you ever need them (not created by default):
-# EnvironmentFile=-/etc/mindgate/env
+# Written by install.sh — MINDGATE_OWNER_UID identifies the real human
+# who installed MindGate, so authorized() in server.rs can let their
+# own unprivileged processes (the CLI without sudo, and critically the
+# browser extension's native-messaging bridge) talk to this socket
+# even though the daemon itself runs as root with no sudo layer of its
+# own to read a SUDO_UID from. The leading '-' means "don't fail unit
+# startup if this file doesn't exist yet."
+EnvironmentFile=-/etc/mindgate/owner.env
 
 [Install]
 WantedBy=multi-user.target

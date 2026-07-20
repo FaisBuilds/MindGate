@@ -17,6 +17,7 @@ anyhow.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
+# Added the "env-filter" feature here to fix the EnvFilter compilation error
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 rand_core = { version = "0.6", features = ["std"] }
 libc = "0.2"
