@@ -35,7 +35,7 @@ use tokio::net::{UnixListener, UnixStream};
 /// alarm periods for installed extensions) plus scheduling jitter,
 /// without being so loose that a genuinely dead extension takes
 /// minutes to show up as gone.
-pub(crate) const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(45);
+pub(crate) const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(150);
 
 /// Look up the connecting peer's UID via `SO_PEERCRED`. Returns `None`
 /// if the platform/socket doesn't support it, which callers treat as

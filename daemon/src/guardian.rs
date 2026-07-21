@@ -7,37 +7,21 @@
 //! supported Chromium-based browser process is closed. Per the MVP1
 //! doc: "The daemon never decides what to block. It only protects the
 //! blocker." This is that protection.
-//!
-//! NOTE ON REPO STATE: this file previously contained the contents of
-//! `installer/install.sh` at this path — `daemon/src/guardian.rs` was
-//! bash, not Rust, which meant `mod guardian;` in `main.rs` could not
-//! have compiled. That content has been moved back to
-//! `installer/install.sh` (see that file). This is the real,
-//! from-scratch `guardian.rs`.
 
 use crate::server::HEARTBEAT_TIMEOUT;
 use crate::AppState;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::process::Command;
 
 const CHECK_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Grace period after daemon startup before "no heartbeat yet" is
 /// treated as "the extension is gone" rather than "hasn't had time to
-/// connect yet." Comfortably longer than the extension's own sync
-/// cadence (`background.js`'s `chrome.alarms` period, ~60s, plus
-/// scheduling jitter) — a bare `mindgate restart` or a reboot must not
-/// immediately nuke every open browser before the extension's
-/// background worker has even woken up.
+/// connect yet."
 const STARTUP_GRACE: Duration = Duration::from_secs(90);
 
-/// Every supported Chromium-based browser's process name, per the
-/// MVP1 doc's Browser Support list. Matched by process name via
-/// `pkill -x`, not by window title or PID tracking — the simplest
-/// thing that reliably closes every window and every profile of a
-/// given browser at once, which is the point: leaving one window open
-/// while three others close defeats the purpose.
+/// Every supported Chromium-based browser's process name.
 const SUPPORTED_BROWSER_PROCESSES: &[&str] = &[
     "chrome",
     "chromium",
@@ -48,24 +32,31 @@ const SUPPORTED_BROWSER_PROCESSES: &[&str] = &[
     "opera",
 ];
 
-async fn close_supported_browsers() {
+/// FIX: Pass state reference so we can reset the heartbeat after killing.
+async fn close_supported_browsers(state: &AppState) {
     for process in SUPPORTED_BROWSER_PROCESSES {
         match Command::new("pkill").args(["-x", process]).status().await {
             Ok(status) if status.success() => {
                 tracing::warn!("guardian: closed running instances of {process}");
             }
-            // pkill exits 1 when no matching process is found — not
-            // an error, just "that browser wasn't running."
+            // pkill exits 1 when no matching process is found — not an error.
             Ok(_) => {}
             Err(e) => {
                 tracing::warn!("guardian: failed to run pkill for {process}: {e}");
             }
         }
     }
+    
+    // CRITICAL FIX: Set heartbeat to CURRENT TIME
+    // This gives the user a FULL HEARTBEAT_TIMEOUT (150s) to:
+    // 1. Reopen Chrome
+    // 2. Re-enable the extension
+    // 3. Let the extension send its first heartbeat
+    *state.last_heartbeat.lock().await = Some(Instant::now());
+    tracing::info!("guardian: reset heartbeat timer - user has 150s to reconnect");
 }
 
-/// Spawns the background task. Call once from `main.rs`, alongside
-/// `self_watch::spawn()`.
+/// Spawns the background task. Call once from `main.rs`.
 pub fn spawn(state: Arc<AppState>) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(CHECK_INTERVAL);
@@ -79,8 +70,7 @@ pub fn spawn(state: Arc<AppState>) {
             let last_heartbeat = *state.last_heartbeat.lock().await;
             let stale = match last_heartbeat {
                 Some(t) => t.elapsed() >= HEARTBEAT_TIMEOUT,
-                // No heartbeat ever received, and we're past the
-                // startup grace period — treat the same as stale.
+                // No heartbeat ever received, and we're past the startup grace period.
                 None => true,
             };
 
@@ -90,7 +80,8 @@ pub fn spawn(state: Arc<AppState>) {
                      missing, disabled, or crashed. Closing supported browsers.",
                     HEARTBEAT_TIMEOUT
                 );
-                close_supported_browsers().await;
+                // FIX: Pass state to the function
+                close_supported_browsers(&state).await;
             }
         }
     });

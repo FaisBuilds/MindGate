@@ -6,7 +6,7 @@
 #   1. Builds release binaries (`mindgated` daemon & `mindgate` CLI).
 #   2. Installs binaries to /usr/local/bin (root-owned).
 #   3. Creates /etc/mindgate and owner.env for non-root IPC authorization.
-#   4. Installs Native Messaging Hosts across all Chromium browsers.
+#   4. Installs Native Messaging Hosts globally across all Chromium browsers.
 #   5. Configures systemd services for both Daemon and Watchdog.
 
 set -euo pipefail
@@ -23,16 +23,17 @@ CONFIG_DIR="/etc/mindgate"
 REAL_USER="${SUDO_USER:-$(logname 2>/dev/null || echo root)}"
 REAL_HOME="$(getent passwd "${REAL_USER}" | cut -d: -f6)"
 
-# Replace with extension ID if hardcoded extension ID matching is enforced
+# PERMANENT Extension ID (locked via manifest.json "key")
 EXTENSION_ID="gpdnmbmmmlgopipgnddldnihapebjkfn"
 
 echo "[1/5] Building release binaries..."
 cd "${REPO_ROOT}"
-#cargo build --release
+# cargo build --release
 
 echo "[2/5] Installing binaries to ${INSTALL_BIN_DIR}..."
 install -o root -g root -m 755 target/release/mindgated "${INSTALL_BIN_DIR}/mindgated"
 install -o root -g root -m 755 target/release/mindgate  "${INSTALL_BIN_DIR}/mindgate"
+echo "  ✓ Binaries installed."
 
 echo "[3/5] Setting up configuration directory (${CONFIG_DIR})..."
 mkdir -p "${CONFIG_DIR}"
@@ -42,6 +43,7 @@ chmod 700 "${CONFIG_DIR}"
 REAL_UID="$(id -u "${REAL_USER}")"
 echo "MINDGATE_OWNER_UID=${REAL_UID}" > "${CONFIG_DIR}/owner.env"
 chmod 644 "${CONFIG_DIR}/owner.env"
+echo "  ✓ Configuration directory ready."
 
 echo "[4/5] Generating Native Messaging Bridge & Manifests..."
 BRIDGE_SCRIPT="${INSTALL_BIN_DIR}/mindgate-bridge.sh"
@@ -55,20 +57,22 @@ chmod 755 "${BRIDGE_SCRIPT}"
 chown root:root "${BRIDGE_SCRIPT}"
 
 NMH_MANIFEST_NAME="com.mindgate.protector.json"
-declare -a NMH_DIRS=(
-  "${REAL_HOME}/.config/google-chrome/NativeMessagingHosts"
-  "${REAL_HOME}/.config/chromium/NativeMessagingHosts"
-  "${REAL_HOME}/.config/BraveSoftware/Brave-Browser/NativeMessagingHosts"
-  "${REAL_HOME}/.config/vivaldi/NativeMessagingHosts"
-  "${REAL_HOME}/.config/microsoft-edge/NativeMessagingHosts"
-  "${REAL_HOME}/.config/opera/NativeMessagingHosts"
+
+# GLOBAL directories (Most reliable, applies to all users/profiles of the browser)
+declare -a GLOBAL_NMH_DIRS=(
+  "/etc/opt/chrome/native-messaging-hosts"
+  "/etc/chromium/native-messaging-hosts"
+  "/etc/opt/brave/native-messaging-hosts"
+  "/etc/vivaldi/native-messaging-hosts"
+  "/etc/opt/microsoft-edge/native-messaging-hosts"
 )
 
-for dir in "${NMH_DIRS[@]}"; do
+for dir in "${GLOBAL_NMH_DIRS[@]}"; do
   parent="$(dirname "${dir}")"
-  [[ -d "${parent}" ]] || continue
-  mkdir -p "${dir}"
-  cat > "${dir}/${NMH_MANIFEST_NAME}" <<MANIFEST_EOF
+  # Create directory if parent exists (e.g., /etc/opt or /etc)
+  if [[ -d "${parent}" ]] || [[ "${parent}" == "/etc/opt" ]] || [[ "${parent}" == "/etc" ]]; then
+    mkdir -p "${dir}"
+    cat > "${dir}/${NMH_MANIFEST_NAME}" <<MANIFEST_EOF
 {
   "name": "com.mindgate.protector",
   "description": "MindGate Native Messaging Bridge",
@@ -79,8 +83,9 @@ for dir in "${NMH_DIRS[@]}"; do
   ]
 }
 MANIFEST_EOF
-  chown "${REAL_USER}:${REAL_USER}" "${dir}/${NMH_MANIFEST_NAME}"
-  echo "  -> Installed manifest for $(basename "${parent}")"
+    chmod 644 "${dir}/${NMH_MANIFEST_NAME}"
+    echo "  -> Installed global manifest in ${dir}"
+  fi
 done
 
 echo "[5/5] Registering and starting systemd services..."
@@ -105,10 +110,11 @@ echo " Daemon & Watchdog services are live and enabled on boot."
 echo "=========================================================="
 echo
 echo "To finish setup:"
-echo " 1. Open your Chromium browser."
-echo " 2. Go to extensions (e.g. chrome://extensions)."
-echo " 3. Enable 'Developer mode' and click 'Load unpacked'."
-echo " 4. Select the 'extension/' directory in this repository."
-echo " 5. Enable 'Allow in Incognito' for full protection."
+echo " 1. Completely close all Chrome/Chromium windows."
+echo " 2. Open Chrome and go to chrome://extensions."
+echo " 3. Remove the old MindGate extension if it exists."
+echo " 4. Enable 'Developer mode' and click 'Load unpacked'."
+echo " 5. Select the 'extension/' directory in this repository."
+echo " 6. Enable 'Allow in Incognito' for full protection."
 echo
 echo "Run 'mindgate doctor' to check connection status."
