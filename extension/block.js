@@ -114,7 +114,10 @@
 
   function setLockValue() {
     chrome.storage.local.get(["lockInfo"], (data) => {
-      document.getElementById("lock-value").textContent = formatRemaining(data.lockInfo);
+      const lockElement = document.getElementById("lock-value");
+      if (lockElement) {
+        lockElement.textContent = formatRemaining(data.lockInfo);
+      }
     });
   }
 
@@ -140,4 +143,17 @@
   setRandomQuote();
   setLockValue();
   spawnParticles();
+
+  // ==========================================
+  // NEW: LIVE LOCK COUNTDOWN EXTENSION
+  // ==========================================
+  //
+  // Extends the existing setLockValue to update every second.
+  // This gives the user a live, ticking countdown on the block page
+  // so they can see exactly when their focus session ends.
+  
+  setInterval(() => {
+    setLockValue();
+  }, 1000);
+
 })();

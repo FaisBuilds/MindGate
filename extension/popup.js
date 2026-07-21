@@ -215,4 +215,140 @@
 
   // --- Init ---
   loadAll();
+
+  // ==========================================
+  // NEW: FLEXIBLE FOCUS LOCK LOGIC
+  // ==========================================
+
+  function updateLockUI(lockState) {
+    const lockControls = document.getElementById("lock-controls");
+    const lockedView = document.getElementById("locked-view");
+    const statusText = document.getElementById("lock-status-text");
+    const ruleSections = document.querySelectorAll(".section:not(.lock-section)");
+
+    if (lockState && lockState.locked) {
+      if (lockState.unlockAt === null || lockState.unlockAt === undefined) {
+        document.getElementById("timer-display").textContent = "FOREVER";
+      } else if (lockState.unlockAt > Date.now()) {
+        startTimerCountdown(lockState.unlockAt);
+      } else {
+        // Expired, treat as unlocked
+        unlockSystem();
+        return;
+      }
+
+      lockControls.style.display = "none";
+      lockedView.style.display = "block";
+      statusText.textContent = "Locked";
+      statusText.classList.add("locked-active");
+      
+      ruleSections.forEach(s => s.classList.add("locked"));
+    } else {
+      unlockSystem();
+    }
+  }
+
+  function unlockSystem() {
+    const lockControls = document.getElementById("lock-controls");
+    const lockedView = document.getElementById("locked-view");
+    const statusText = document.getElementById("lock-status-text");
+    const ruleSections = document.querySelectorAll(".section:not(.lock-section)");
+
+    lockControls.style.display = "block";
+    lockedView.style.display = "none";
+    statusText.textContent = "Unlocked";
+    statusText.classList.remove("locked-active");
+    
+    ruleSections.forEach(s => s.classList.remove("locked"));
+    clearInterval(window.lockTimer);
+  }
+
+  function startTimerCountdown(unlockAt) {
+    clearInterval(window.lockTimer);
+    
+    const updateTimer = () => {
+      const remaining = Math.max(0, unlockAt - Date.now());
+      const hours = Math.floor(remaining / 3600000);
+      const minutes = Math.floor((remaining % 3600000) / 60000);
+      const seconds = Math.floor((remaining % 60000) / 1000);
+      
+      document.getElementById("timer-display").textContent = 
+        `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+      
+      if (remaining <= 0) {
+        clearInterval(window.lockTimer);
+        chrome.storage.local.remove("lockState").then(() => {
+          unlockSystem();
+        });
+      }
+    };
+    
+    updateTimer();
+    window.lockTimer = setInterval(updateTimer, 1000);
+  }
+
+  // Handle Preset Buttons
+  document.querySelectorAll(".lock-btn-sm").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const durationSecs = parseInt(btn.dataset.duration, 10);
+      const unlockAt = Date.now() + (durationSecs * 1000);
+      chrome.storage.local.set({ lockState: { locked: true, unlockAt } });
+    });
+  });
+
+  // Handle Custom Lock Button
+  document.getElementById("custom-lock-btn").addEventListener("click", () => {
+    const value = parseInt(document.getElementById("custom-duration").value, 10);
+    const multiplier = parseInt(document.getElementById("custom-unit").value, 10);
+    
+    if (isNaN(value) || value < 1) {
+      const input = document.getElementById("custom-duration");
+      input.style.borderColor = "#ef4444";
+      setTimeout(() => input.style.borderColor = "", 800);
+      return;
+    }
+
+    const durationSecs = value * multiplier;
+    const unlockAt = Date.now() + (durationSecs * 1000);
+    chrome.storage.local.set({ lockState: { locked: true, unlockAt } });
+  });
+
+  // ==========================================
+  // NEW: DYNAMIC MAX LIMITS FOR CUSTOM INPUT
+  // ==========================================
+  const unitSelect = document.getElementById("custom-unit");
+  const durationInput = document.getElementById("custom-duration");
+
+  const maxLimits = {
+    "60": 180,         // Minutes -> max 180 (3 hours)
+    "3600": 48,        // Hours -> max 48 (2 days)
+    "86400": 30,       // Days -> max 30 (1 month)
+    "604800": 8,       // Weeks -> max 8 (2 months)
+    "2592000": 6,      // Months -> max 6 (half a year)
+    "31536000": 2      // Years -> max 2 (2 years)
+  };
+
+  unitSelect.addEventListener("change", () => {
+    const selectedUnit = unitSelect.value;
+    durationInput.max = maxLimits[selectedUnit] || 180;
+    
+    // Clear the input value if it exceeds the new max to prevent UI confusion
+    const currentVal = parseInt(durationInput.value, 10);
+    if (currentVal > durationInput.max) {
+      durationInput.value = durationInput.max;
+    }
+  });
+
+  // Initialize lock state on load
+  chrome.storage.local.get("lockState").then(data => {
+    updateLockUI(data.lockState);
+  });
+
+  // Listen for lock state changes (e.g., if background.js updates it, or timer expires)
+  chrome.storage.onChanged.addListener((changes) => {
+    if (changes.lockState) {
+      updateLockUI(changes.lockState.newValue);
+    }
+  });
+
 })();

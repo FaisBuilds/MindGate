@@ -250,3 +250,137 @@ input[type="text"]::placeholder {
   color: #6b5f65;
   letter-spacing: 0.02em;
 }
+
+/* ========================================== */
+/* NEW: FLEXIBLE FOCUS LOCK STYLES            */
+/* ========================================== */
+
+.lock-section {
+  border-color: rgba(244, 114, 182, 0.4);
+  background: rgba(244, 114, 182, 0.03);
+}
+
+.lock-presets {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.lock-btn-sm {
+  flex: 1;
+  background: rgba(244, 114, 182, 0.08);
+  border: 1px solid rgba(244, 114, 182, 0.25);
+  color: #f472b6;
+  padding: 6px 0;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.lock-btn-sm:hover {
+  background: rgba(244, 114, 182, 0.15);
+  border-color: #f472b6;
+}
+
+.lock-custom {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+  align-items: center;
+}
+
+.custom-input {
+  width: 60px;
+  background: #0f0f0f;
+  border: 1px solid rgba(244, 114, 182, 0.25);
+  color: #ece7e9;
+  padding: 6px 8px;
+  border-radius: 5px;
+  font-size: 12px;
+  outline: none;
+}
+
+.custom-input:focus {
+  border-color: #f472b6;
+}
+
+/* Hide number spinner arrows */
+.custom-input::-webkit-outer-spin-button,
+.custom-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.custom-select {
+  flex: 1;
+  background: #0f0f0f;
+  border: 1px solid rgba(244, 114, 182, 0.25);
+  color: #ece7e9;
+  padding: 6px 8px;
+  border-radius: 5px;
+  font-size: 12px;
+  outline: none;
+  cursor: pointer;
+}
+
+.custom-select:focus {
+  border-color: #f472b6;
+}
+
+.lock-btn-action {
+  background: rgba(244, 114, 182, 0.15);
+  border: 1px solid #f472b6;
+  color: #f472b6;
+  padding: 6px 12px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.lock-btn-action:hover {
+  background: #f472b6;
+  color: #050505;
+}
+
+.locked-view {
+  text-align: center;
+  padding: 12px 0;
+}
+
+.timer-display {
+  font-family: "Courier New", Courier, monospace;
+  font-size: 26px;
+  color: #f472b6;
+  font-weight: bold;
+  letter-spacing: 2px;
+  margin-bottom: 6px;
+  text-shadow: 0 0 12px rgba(244, 114, 182, 0.4);
+}
+
+.lock-tagline {
+  font-family: Georgia, "Iowan Old Style", serif;
+  font-style: italic;
+  font-size: 11px;
+  color: #8a7d84;
+  letter-spacing: 0.02em;
+}
+
+#lock-status-text {
+  transition: color 0.3s ease;
+}
+
+#lock-status-text.locked-active {
+  color: #f472b6;
+  text-shadow: 0 0 8px rgba(244, 114, 182, 0.4);
+}
+
+.section.locked {
+  opacity: 0.35;
+  pointer-events: none;
+  filter: grayscale(80%);
+  transition: all 0.3s ease;
+}
