@@ -67,3 +67,8 @@ mindgate uninstall
 
 # Help
 mindgate --help
+
+
+
+#HELPFULL COMMANDS
+chrome.storage.local.remove("lockState")

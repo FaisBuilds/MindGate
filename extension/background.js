@@ -13,7 +13,6 @@ const HOST_NAME = "com.mindgate.protector";
 const HEARTBEAT_ALARM_NAME = "mindgate-heartbeat";
 
 // Chrome enforces a hard 1-minute FLOOR on chrome.alarms periods for installed extensions.
-// Requesting < 1 minute silently clamps to ~60s. We align with this reality.
 const HEARTBEAT_PERIOD_MINUTES = 1;
 
 /**
@@ -33,30 +32,45 @@ function sendToDaemon(payload) {
 
 /**
  * Fire-and-forget heartbeat. 
- * If it fails, we log it, but we don't abort local enforcement. 
- * The daemon will handle the missing heartbeat by closing the browser.
  */
 async function sendHeartbeat() {
   try {
-    await sendToDaemon({ cmd: "ExtensionHeartbeat" });
+    const { lockState } = await chrome.storage.local.get("lockState");
+    await sendToDaemon({ 
+      cmd: "ExtensionHeartbeat",
+      lockState: lockState || null 
+    });
   } catch (e) {
-    console.warn("[MindGate] Heartbeat failed (daemon may be restarting or crashed):", e.message);
+    console.warn("[MindGate] Heartbeat failed:", e.message);
   }
 }
 
 /**
- * Rebuilds the declarativeNetRequest dynamic ruleset from the local 
- * 'websites' list. Redirects top-level navigations to block.html 
- * BEFORE Chrome attempts the network request.
- * 
- * Scoped to `resourceTypes: ["main_frame"]` to avoid breaking 
- * sub-resources or iframes on allowed sites.
+ * Rebuilds the declarativeNetRequest dynamic ruleset from the local 'websites' list.
  */
 async function syncWebsiteBlockRules(domains = []) {
   try {
+    // STRICT CHECK: Must be explicitly true
+    const { lockState } = await chrome.storage.local.get("lockState");
+    const isLocked = !!(lockState && lockState.locked === true);
+    
+    console.log(`[MindGate] syncWebsiteBlockRules: isLocked = ${isLocked}`);
+
     const existing = await chrome.declarativeNetRequest.getDynamicRules();
     const removeRuleIds = existing.map((r) => r.id);
 
+    // If NOT locked, aggressively clear any existing blocking rules
+    if (!isLocked) {
+      if (removeRuleIds.length > 0) {
+        await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds, addRules: [] });
+        console.log("[MindGate] Unlocked: Website block rules cleared.");
+      } else {
+        console.log("[MindGate] Unlocked: No rules to clear.");
+      }
+      return;
+    }
+
+    // If LOCKED, apply the rules
     const addRules = domains.map((domain, index) => ({
       id: index + 1,
       priority: 1,
@@ -71,7 +85,7 @@ async function syncWebsiteBlockRules(domains = []) {
     }));
 
     await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds, addRules });
-    console.log(`[MindGate] Website block rules synced: ${addRules.length} domain(s).`);
+    console.log(`[MindGate] Locked: Website block rules synced: ${addRules.length} domain(s).`);
   } catch (e) {
     console.error("[MindGate] Failed to sync website block rules:", e.message);
   }
@@ -79,26 +93,21 @@ async function syncWebsiteBlockRules(domains = []) {
 
 /**
  * Core initialization and sync. 
- * Reads rules directly from local storage (managed by the extension's Settings UI).
  */
 async function initializeAndSync() {
   console.log("[MindGate] Initializing and syncing local rules...");
   
-  // 1. Send immediate heartbeat on startup
   await sendHeartbeat();
 
-  // 2. Load local rules and apply them
-  const data = await chrome.storage.local.get(["websites", "keywords", "paths", "subreddits"]);
+  // Fetch websites AND lockState together
+  const data = await chrome.storage.local.get(["websites", "keywords", "paths", "subreddits", "lockState"]);
   const websites = data.websites || [];
   
-  // Note: keywords, paths, and subreddits are handled by content.js, 
-  // which reads directly from this same chrome.storage.local.
-  
   await syncWebsiteBlockRules(websites);
-  console.log("[MindGate] Local rules applied.");
+  console.log("[MindGate] Local rules initialization complete.");
 }
 
-// 1. Setup recurring heartbeat alarm (survives service worker termination)
+// 1. Setup recurring heartbeat alarm
 chrome.alarms.create(HEARTBEAT_ALARM_NAME, { periodInMinutes: HEARTBEAT_PERIOD_MINUTES });
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === HEARTBEAT_ALARM_NAME) {
@@ -115,24 +124,25 @@ setTimeout(() => {
 chrome.runtime.onInstalled.addListener(initializeAndSync);
 chrome.runtime.onStartup.addListener(initializeAndSync);
 
-// 3. INSTANT reactivity: When the user changes rules in the Settings UI, 
-// update the blocking rules immediately. No polling needed.
+// 3. INSTANT reactivity
 chrome.storage.onChanged.addListener((changes, namespace) => {
-  if (namespace === "local" && changes.websites) {
+  if (namespace !== "local") return;
+  
+  if (changes.websites) {
     console.log("[MindGate] Websites changed in storage, updating dNR rules...");
     syncWebsiteBlockRules(changes.websites.newValue || []);
+  }
+  
+  if (changes.lockState) {
+    console.log("[MindGate] Lock state changed, re-evaluating dNR rules...");
+    chrome.storage.local.get(["websites"]).then(data => {
+      syncWebsiteBlockRules(data.websites || []);
+    });
   }
 });
 
 /**
  * Self-heal for the DNS-blackhole / declarativeNetRequest sync race.
- * 
- * If a tab navigates to a newly-added domain before the dNR rules have 
- * fully synced, Chrome might hit a raw DNS error. This listener catches 
- * `net::ERR_NAME_NOT_RESOLVED`, checks if the hostname is in our local 
- * blocked list, and forcefully redirects to block.html.
- * 
- * This turns a raw browser error into the premium MindGate block page.
  */
 function hostMatchesBlockedDomain(hostname, domains) {
   const host = hostname.toLowerCase();
@@ -154,11 +164,12 @@ chrome.webNavigation.onErrorOccurred.addListener(async (details) => {
   }
   if (!hostname) return;
 
-  // Check local storage directly (no daemon round-trip needed)
-  const data = await chrome.storage.local.get(["websites"]);
+  const data = await chrome.storage.local.get(["websites", "lockState"]);
   const domains = data.websites || [];
+  const isLocked = !!(data.lockState && data.lockState.locked === true);
   
-  if (hostMatchesBlockedDomain(hostname, domains)) {
+  // STRICT CHECK: Only self-heal redirect if we are actually locked
+  if (isLocked && hostMatchesBlockedDomain(hostname, domains)) {
     console.log(`[MindGate] Self-heal: Redirecting blocked domain ${hostname} to block page.`);
     const blockUrl = chrome.runtime.getURL("block.html") + "?reason=website";
     chrome.tabs.update(details.tabId, { url: blockUrl });

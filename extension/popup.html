@@ -17,17 +17,21 @@
         <span id="status-text">Protection Active</span>
       </div>
     </div>
+    <div class="total-badge" id="total-badge" title="Total active rules">
+      <span id="total-count">0</span>
+      <span class="total-label">rules</span>
+    </div>
   </div>
 
   <!-- ========================================== -->
-  <!-- NEW: FLEXIBLE FOCUS LOCK SECTION           -->
+  <!-- FLEXIBLE FOCUS LOCK SECTION                -->
   <!-- ========================================== -->
   <div class="section lock-section" id="lock-section">
     <div class="section-header">
       <span class="section-title">Focus Lock</span>
       <span class="count" id="lock-status-text">Unlocked</span>
     </div>
-    
+
     <!-- UNLOCKED STATE -->
     <div id="lock-controls">
       <div class="lock-presets">
@@ -36,7 +40,7 @@
         <button class="lock-btn-sm" data-duration="14400">4h</button>
         <button class="lock-btn-sm" data-duration="86400">1d</button>
       </div>
-      
+
       <div class="lock-custom">
         <!-- Added max="180" as the default safe limit for minutes -->
         <input type="number" id="custom-duration" min="1" max="180" placeholder="30" class="custom-input">
@@ -60,58 +64,83 @@
   </div>
   <!-- ========================================== -->
 
-  <div class="section">
-    <div class="section-header">
+  <details class="section" id="websites-section" open>
+    <summary class="section-header">
       <span class="section-title">Websites</span>
       <span class="count" id="websites-count">0</span>
+    </summary>
+    <div class="section-body">
+      <div class="input-row">
+        <input type="text" id="website-input" placeholder="youtube.com" spellcheck="false">
+        <button class="add-btn" data-type="website">+</button>
+      </div>
+      <div class="filter-row" data-filter-for="websites-list">
+        <input type="text" class="filter-input" placeholder="Filter websites…" spellcheck="false">
+        <span class="filter-shown"></span>
+      </div>
+      <div class="list" id="websites-list"></div>
     </div>
-    <div class="input-row">
-      <input type="text" id="website-input" placeholder="youtube.com" spellcheck="false">
-      <button class="add-btn" data-type="website">+</button>
-    </div>
-    <div class="list" id="websites-list"></div>
-  </div>
+  </details>
 
-  <div class="section">
-    <div class="section-header">
+  <details class="section" id="paths-section">
+    <summary class="section-header">
       <span class="section-title">Paths</span>
       <span class="count" id="paths-count">0</span>
+    </summary>
+    <div class="section-body">
+      <div class="input-row">
+        <input type="text" id="path-input" placeholder="reddit.com/r/gaming" spellcheck="false">
+        <button class="add-btn" data-type="path">+</button>
+      </div>
+      <div class="filter-row" data-filter-for="paths-list">
+        <input type="text" class="filter-input" placeholder="Filter paths…" spellcheck="false">
+        <span class="filter-shown"></span>
+      </div>
+      <div class="list" id="paths-list"></div>
     </div>
-    <div class="input-row">
-      <input type="text" id="path-input" placeholder="reddit.com/r/gaming" spellcheck="false">
-      <button class="add-btn" data-type="path">+</button>
-    </div>
-    <div class="list" id="paths-list"></div>
-  </div>
+  </details>
 
-  <div class="section">
-    <div class="section-header">
+  <details class="section" id="keywords-section">
+    <summary class="section-header">
       <span class="section-title">Keywords</span>
       <span class="count" id="keywords-count">0</span>
+    </summary>
+    <div class="section-body">
+      <div class="input-row">
+        <input type="text" id="keyword-input" placeholder="nsfw" spellcheck="false">
+        <button class="add-btn" data-type="keyword">+</button>
+      </div>
+      <div class="filter-row" data-filter-for="keywords-list">
+        <input type="text" class="filter-input" placeholder="Filter keywords…" spellcheck="false">
+        <span class="filter-shown"></span>
+      </div>
+      <div class="list" id="keywords-list"></div>
     </div>
-    <div class="input-row">
-      <input type="text" id="keyword-input" placeholder="nsfw" spellcheck="false">
-      <button class="add-btn" data-type="keyword">+</button>
-    </div>
-    <div class="list" id="keywords-list"></div>
-  </div>
+  </details>
 
-  <div class="section">
-    <div class="section-header">
+  <details class="section" id="subreddits-section">
+    <summary class="section-header">
       <span class="section-title">Subreddits</span>
       <span class="count" id="subreddits-count">0</span>
+    </summary>
+    <div class="section-body">
+      <div class="input-row">
+        <input type="text" id="subreddit-input" placeholder="gonewild" spellcheck="false">
+        <button class="add-btn" data-type="subreddit">+</button>
+      </div>
+      <div class="filter-row" data-filter-for="subreddits-list">
+        <input type="text" class="filter-input" placeholder="Filter subreddits…" spellcheck="false">
+        <span class="filter-shown"></span>
+      </div>
+      <div class="list" id="subreddits-list"></div>
     </div>
-    <div class="input-row">
-      <input type="text" id="subreddit-input" placeholder="gonewild" spellcheck="false">
-      <button class="add-btn" data-type="subreddit">+</button>
-    </div>
-    <div class="list" id="subreddits-list"></div>
-  </div>
+  </details>
 
   <div class="footer">
     <div class="footer-tag">Protect your future self.</div>
   </div>
 
   <script src="popup.js"></script>
+  <script src="popup-ui.js"></script>
 </body>
 </html>

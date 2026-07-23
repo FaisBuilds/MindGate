@@ -86,23 +86,101 @@ body::-webkit-scrollbar-thumb {
   50% { opacity: 1; transform: scale(1.1); }
 }
 
-/* Sections */
+/* Total rules badge, top right of header */
+.total-badge {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-width: 46px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  background: rgba(244, 114, 182, 0.06);
+  border: 1px solid rgba(244, 114, 182, 0.18);
+}
+
+#total-count {
+  font-family: Georgia, "Iowan Old Style", serif;
+  font-weight: 700;
+  font-size: 15px;
+  color: #f472b6;
+  line-height: 1.1;
+}
+
+.total-label {
+  font-size: 8px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #8a7d84;
+  margin-top: 1px;
+}
+
+/* Sections (both <div> lock-section and <details> rule sections) */
 .section {
   position: relative;
   z-index: 1;
-  margin-bottom: 18px;
+  display: block;
+  margin-bottom: 10px;
   padding: 12px;
   background: rgba(255, 255, 255, 0.02);
   border: 1px solid rgba(244, 114, 182, 0.1);
-  border-radius: 8px;
+  border-radius: 10px;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+details.section {
+  padding: 0;
+  overflow: hidden;
+}
+
+details.section > .section-header {
+  padding: 12px;
+  cursor: pointer;
+}
+
+details.section .section-body {
+  padding: 0 12px 12px;
+}
+
+details.section[open] {
+  border-color: rgba(244, 114, 182, 0.22);
+}
+
+/* Native marker removal + custom chevron */
+summary.section-header {
+  list-style: none;
+}
+summary.section-header::-webkit-details-marker { display: none; }
+
+summary.section-header::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid #8a7d84;
+  border-bottom: 1.5px solid #8a7d84;
+  transform: rotate(-45deg);
+  transition: transform 0.2s ease, border-color 0.2s ease;
+  margin-right: 2px;
+}
+
+details.section[open] summary.section-header::before {
+  transform: rotate(45deg);
+  border-color: #f472b6;
+}
+
+summary.section-header:hover::before {
+  border-color: #f472b6;
 }
 
 .section-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
   margin-bottom: 10px;
 }
+
+details.section .section-header { margin-bottom: 0; }
 
 .section-title {
   font-family: Georgia, "Iowan Old Style", serif;
@@ -110,6 +188,7 @@ body::-webkit-scrollbar-thumb {
   font-size: 13px;
   color: #f4eef1;
   letter-spacing: 0.02em;
+  flex: 1;
 }
 
 .count {
@@ -120,6 +199,7 @@ body::-webkit-scrollbar-thumb {
   padding: 2px 8px;
   border-radius: 10px;
   font-weight: 600;
+  white-space: nowrap;
 }
 
 /* Input row */
@@ -127,6 +207,7 @@ body::-webkit-scrollbar-thumb {
   display: flex;
   gap: 6px;
   margin-bottom: 8px;
+  margin-top: 12px;
 }
 
 input[type="text"] {
@@ -139,11 +220,15 @@ input[type="text"] {
   font-size: 12px;
   font-family: inherit;
   outline: none;
-  transition: border-color 0.2s;
+  transition: border-color 0.2s, box-shadow 0.2s;
 }
 
 input[type="text"]:focus {
   border-color: rgba(244, 114, 182, 0.5);
+}
+
+input[type="text"]:focus-visible {
+  box-shadow: 0 0 0 2px rgba(244, 114, 182, 0.15);
 }
 
 input[type="text"]::placeholder {
@@ -164,6 +249,7 @@ input[type="text"]::placeholder {
   transition: all 0.2s;
   line-height: 1;
   padding-bottom: 2px;
+  flex-shrink: 0;
 }
 
 .add-btn:hover {
@@ -171,13 +257,57 @@ input[type="text"]::placeholder {
   border-color: #f472b6;
 }
 
+.add-btn:focus-visible {
+  box-shadow: 0 0 0 2px rgba(244, 114, 182, 0.25);
+}
+
+/* Filter row — appears above long lists so 100+ entries stay manageable */
+.filter-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.filter-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid rgba(244, 114, 182, 0.12);
+  color: #cfc3ca;
+  padding: 4px 2px;
+  font-size: 11px;
+  font-family: inherit;
+  font-style: italic;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.filter-input::placeholder {
+  color: #4d4348;
+}
+
+.filter-input:focus {
+  border-bottom-color: #f472b6;
+}
+
+.filter-shown {
+  font-size: 10px;
+  color: #6b5f65;
+  white-space: nowrap;
+}
+
 /* Rule list */
 .list {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  max-height: 140px;
+  max-height: 190px;
   overflow-y: auto;
+  /* fade the bottom edge to hint there's more to scroll through */
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 14px), transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 14px), transparent 100%);
+  padding-bottom: 6px;
 }
 
 .list::-webkit-scrollbar { width: 4px; }
@@ -193,10 +323,17 @@ input[type="text"]::placeholder {
   align-items: center;
   padding: 6px 10px;
   background: rgba(255, 255, 255, 0.02);
+  border: 1px solid transparent;
   border-radius: 4px;
   font-size: 12px;
   color: #cfc3ca;
   animation: fadeIn 0.25s ease-out;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.rule:hover {
+  background: rgba(244, 114, 182, 0.05);
+  border-color: rgba(244, 114, 182, 0.12);
 }
 
 @keyframes fadeIn {
@@ -227,6 +364,11 @@ input[type="text"]::placeholder {
   color: #f472b6;
 }
 
+.delete-btn:focus-visible {
+  outline: 1px solid rgba(244, 114, 182, 0.5);
+  border-radius: 3px;
+}
+
 .empty {
   font-size: 11px;
   color: #4d4348;
@@ -252,12 +394,13 @@ input[type="text"]::placeholder {
 }
 
 /* ========================================== */
-/* NEW: FLEXIBLE FOCUS LOCK STYLES            */
+/* FLEXIBLE FOCUS LOCK STYLES                  */
 /* ========================================== */
 
 .lock-section {
-  border-color: rgba(244, 114, 182, 0.4);
-  background: rgba(244, 114, 182, 0.03);
+  border-color: rgba(244, 114, 182, 0.35);
+  background: linear-gradient(180deg, rgba(244, 114, 182, 0.05), rgba(244, 114, 182, 0.015));
+  box-shadow: 0 0 0 1px rgba(244, 114, 182, 0.05) inset, 0 8px 24px -12px rgba(244, 114, 182, 0.25);
 }
 
 .lock-presets {
@@ -284,10 +427,15 @@ input[type="text"]::placeholder {
   border-color: #f472b6;
 }
 
+.lock-btn-sm:focus-visible,
+.lock-btn-action:focus-visible {
+  box-shadow: 0 0 0 2px rgba(244, 114, 182, 0.25);
+}
+
 .lock-custom {
   display: flex;
   gap: 6px;
-  margin-bottom: 10px;
+  margin-bottom: 2px;
   align-items: center;
 }
 
@@ -348,7 +496,7 @@ input[type="text"]::placeholder {
 
 .locked-view {
   text-align: center;
-  padding: 12px 0;
+  padding: 14px 0 4px;
 }
 
 .timer-display {
@@ -383,4 +531,10 @@ input[type="text"]::placeholder {
   pointer-events: none;
   filter: grayscale(80%);
   transition: all 0.3s ease;
+}
+
+/* Respect reduced-motion preference */
+@media (prefers-reduced-motion: reduce) {
+  .status-dot { animation: none; }
+  .rule { animation: none; }
 }

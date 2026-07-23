@@ -9,14 +9,17 @@
   let cachedKeywords = [];
   let cachedSubreddits = [];
   let cachedPaths = [];
+  let isLocked = false; // NEW: Track lock state
   let rulesLoaded = false;
 
   function loadRules(onLoaded) {
     try {
-      chrome.storage.local.get(["keywords", "subreddits", "paths"], (data) => {
+      // NEW: Added "lockState" to the get request
+      chrome.storage.local.get(["keywords", "subreddits", "paths", "lockState"], (data) => {
         cachedKeywords = data.keywords || [];
         cachedSubreddits = data.subreddits || [];
         cachedPaths = data.paths || [];
+        isLocked = data.lockState?.locked || false; // NEW: Cache lock state
         rulesLoaded = true;
         if (onLoaded) onLoaded();
       });
@@ -38,11 +41,16 @@
     if (changes.keywords) cachedKeywords = changes.keywords.newValue || [];
     if (changes.subreddits) cachedSubreddits = changes.subreddits.newValue || [];
     if (changes.paths) cachedPaths = changes.paths.newValue || [];
+    if (changes.lockState) isLocked = changes.lockState.newValue?.locked || false; // NEW: Update lock state
   });
 
   function checkCurrentUrl() {
-    if (!rulesLoaded) return;
-    if (cachedKeywords.length === 0 && cachedSubreddits.length === 0 && cachedPaths.length === 0) return;
+    if (!rulesLoaded) return false;
+    
+    // NEW: If not locked, do nothing. Let the user browse freely.
+    if (!isLocked) return false; 
+
+    if (cachedKeywords.length === 0 && cachedSubreddits.length === 0 && cachedPaths.length === 0) return false;
 
     const currentUrl = window.location.href.toLowerCase();
 
@@ -103,6 +111,9 @@
   // before we scan.
   let domScanTimer = null;
   function scheduleDomScan(delayMs) {
+    // NEW: If not locked, do not scan the DOM.
+    if (!isLocked) return; 
+    
     if (cachedKeywords.length === 0) return;
     clearTimeout(domScanTimer);
     domScanTimer = setTimeout(() => {
