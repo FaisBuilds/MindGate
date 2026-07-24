@@ -74,25 +74,25 @@
 
   // ---------- lock status ----------
   //
-  // Unchanged from before: block.html has no native-messaging access
-  // of its own, so it reads the lockInfo that background.js already
-  // keeps fresh in chrome.storage.local on every sync cycle, rather
-  // than talking to the daemon directly.
-  function formatRemaining(lockInfo) {
-    if (!lockInfo || !lockInfo.locked) {
-      return "Lock Expired";
+  // UPDATED: Reads 'lockState' (not 'lockInfo') and targets 'status-value'
+  // to match the updated architecture.
+  function formatRemaining(lockState) {
+    if (!lockState || !lockState.locked) {
+      return "Active";
     }
 
-    if (lockInfo.unlockAt === null || lockInfo.unlockAt === undefined) {
+    if (lockState.unlockAt === null || lockState.unlockAt === undefined) {
       return "Locked Forever";
     }
 
-    const remainingMs = lockInfo.unlockAt * 1000 - Date.now();
+    // FIXED: unlockAt is already in milliseconds, no need to multiply by 1000
+    const remainingMs = lockState.unlockAt - Date.now();
     if (remainingMs <= 0) {
       return "Lock Expired";
     }
 
-    const minutes = Math.floor(remainingMs / 60000);
+    const totalSeconds = Math.floor(remainingMs / 1000);
+    const minutes = Math.floor(totalSeconds / 60);
     const hours = Math.floor(minutes / 60);
     const days = Math.floor(hours / 24);
 
@@ -108,15 +108,18 @@
         ? `${hours} Hour${hours === 1 ? "" : "s"}, ${remMinutes} Minute${remMinutes === 1 ? "" : "s"} Remaining`
         : `${hours} Hour${hours === 1 ? "" : "s"} Remaining`;
     }
-    const displayMinutes = Math.max(minutes, 1);
-    return `${displayMinutes} Minute${displayMinutes === 1 ? "" : "s"} Remaining`;
+    
+    const displayMinutes = Math.max(Math.floor(totalSeconds / 60), 0);
+    const displaySeconds = totalSeconds % 60;
+    return `${displayMinutes}m ${displaySeconds}s Remaining`;
   }
 
   function setLockValue() {
-    chrome.storage.local.get(["lockInfo"], (data) => {
-      const lockElement = document.getElementById("lock-value");
-      if (lockElement) {
-        lockElement.textContent = formatRemaining(data.lockInfo);
+    // FIXED: Reads 'lockState' and targets 'status-value'
+    chrome.storage.local.get(["lockState"], (data) => {
+      const statusElement = document.getElementById("status-value");
+      if (statusElement) {
+        statusElement.textContent = formatRemaining(data.lockState);
       }
     });
   }
@@ -128,6 +131,8 @@
   // generated once on load so every visit feels slightly different.
   function spawnParticles() {
     const container = document.getElementById("particles");
+    if (!container) return;
+    
     const COUNT = 18;
     for (let i = 0; i < COUNT; i++) {
       const p = document.createElement("div");

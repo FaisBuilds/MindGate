@@ -8,16 +8,30 @@ use serde::{Deserialize, Serialize};
 use std::env;
 use std::path::PathBuf;
 
+/// Represents the current lock state of the extension.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct LockState {
+    pub locked: bool,
+    /// Milliseconds since epoch. None means locked forever.
+    pub unlock_at: Option<u64>,
+}
+
 /// Requests sent to the daemon via the Unix domain socket.
+/// Note: `content = "args"` was removed to allow the browser extension 
+/// to send a flat JSON object: { "cmd": "ExtensionHeartbeat", "lockState": ... }
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "cmd", content = "args")]
+#[serde(tag = "cmd")]
 pub enum Request {
     /// Simple connectivity check from CLI.
     Ping,
     /// Request daemon version info.
     Version,
     /// Sent by the browser extension to prove it is alive.
-    ExtensionHeartbeat,
+    ExtensionHeartbeat {
+        #[serde(default, rename = "lockState")]
+        lock_state: Option<LockState>,
+    },
     /// Request current daemon and extension status (for `mindgate status`/`doctor`).
     Status,
     /// Instruct the daemon to shut down gracefully (for `mindgate stop`).
@@ -29,6 +43,8 @@ pub enum Request {
 pub struct StatusInfo {
     pub daemon_running: bool,
     pub extension_connected: bool,
+    #[serde(default)]
+    pub lock_state: Option<LockState>,
 }
 
 /// Responses sent from the daemon to the CLI or extension.
@@ -86,14 +102,15 @@ mod tests {
 
     #[test]
     fn wire_roundtrip() {
-        let req = Request::ExtensionHeartbeat;
+        // Updated to match the new struct variant
+        let req = Request::ExtensionHeartbeat { lock_state: None };
         let bytes = wire::encode(&req).unwrap();
         
         // Skip the first 4 bytes (length prefix) for decoding
         let decoded: Request = wire::decode(&bytes[4..]).unwrap();
 
         match decoded {
-            Request::ExtensionHeartbeat => {}
+            Request::ExtensionHeartbeat { lock_state: None } => {}
             _ => panic!("wrong variant"),
         }
     }

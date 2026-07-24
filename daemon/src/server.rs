@@ -18,10 +18,10 @@
 
 use crate::AppState;
 use anyhow::{Context, Result};
-use mindgate_common::{socket_path, wire, Request, Response, StatusInfo};
+use mindgate_common::{socket_path, wire, Request, Response, StatusInfo, LockState};
 use std::os::unix::io::AsRawFd;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 
@@ -179,16 +179,48 @@ async fn dispatch(req: Request, state: &AppState) -> Response {
 
     match req {
         Request::Status => build_status(state).await,
-        Request::ExtensionHeartbeat => {
+        
+        // UPDATED: Accept and save the lock_state from the extension heartbeat
+        Request::ExtensionHeartbeat { lock_state } => {
             *state.last_heartbeat.lock().await = Some(Instant::now());
+            if let Some(ls) = lock_state {
+                *state.lock_state.lock().await = Some(ls);
+            }
             Response::Ok
         }
+        
         Request::Ping => Response::Pong,
         Request::Version => Response::Version {
             daemon: env!("CARGO_PKG_VERSION").to_string(),
             protocol: 1,
         },
+        
+        // UPDATED: Intercept Shutdown and reject if locked
         Request::Shutdown => {
+            let current_lock = state.lock_state.lock().await.clone();
+            
+            if let Some(lock) = current_lock {
+                if lock.locked {
+                    let now_ms = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis() as u64;
+                    
+                    let is_expired = if let Some(unlock_at) = lock.unlock_at {
+                        unlock_at <= now_ms
+                    } else {
+                        false // "forever" lock never expires
+                    };
+                    
+                    if !is_expired {
+                        tracing::warn!("Shutdown rejected: MindGate is currently locked");
+                        return Response::Error {
+                            message: "MindGate is currently locked. Shutdown is disabled.".into(),
+                        };
+                    }
+                }
+            }
+            
             tracing::info!("Shutdown requested via CLI");
             state.shutting_down.store(true, Ordering::Release);
             Response::Ok
@@ -200,9 +232,13 @@ async fn build_status(state: &AppState) -> Response {
     let last_heartbeat = *state.last_heartbeat.lock().await;
     let extension_connected =
         last_heartbeat.map(|t| t.elapsed() < HEARTBEAT_TIMEOUT).unwrap_or(false);
+    
+    // UPDATED: Fetch and include the current lock state in the status response
+    let lock_state = state.lock_state.lock().await.clone();
 
     Response::Status(StatusInfo {
         daemon_running: true,
         extension_connected,
+        lock_state,
     })
 }

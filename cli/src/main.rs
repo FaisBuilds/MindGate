@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use mindgate_common::{socket_path, wire, Request, Response};
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
@@ -73,20 +74,81 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Install => run_install().await?,
-        Commands::Uninstall => run_uninstall().await?,
-        Commands::Start => run_systemctl_command("start", "mindgated.service").await?,
+        Commands::Install => {
+            enforce_lock_check().await?;
+            run_install().await?;
+        }
+        Commands::Uninstall => {
+            enforce_lock_check().await?;
+            run_uninstall().await?;
+        }
+        Commands::Start => {
+            // Start is always allowed (if daemon is dead, it can't be locked anyway)
+            run_systemctl_command("start", "mindgated.service").await?;
+        }
         Commands::Stop => {
+            enforce_lock_check().await?;
             let _ = send_shutdown_request().await; // Graceful shutdown
             run_systemctl_command("stop", "mindgated.service").await?;
         }
-        Commands::Restart => run_systemctl_command("restart", "mindgated.service").await?,
+        Commands::Restart => {
+            enforce_lock_check().await?;
+            run_systemctl_command("restart", "mindgated.service").await?;
+        }
         Commands::Status => run_status().await?,
         Commands::Doctor => run_doctor().await?,
         Commands::Logs => run_logs().await?,
         Commands::NativeBridge => run_native_bridge().await?,
     }
 
+    Ok(())
+}
+
+/// Pre-flight check: asks the daemon if it is currently locked.
+/// If locked and not expired, rejects the operation cleanly.
+async fn enforce_lock_check() -> Result<()> {
+    let path = socket_path();
+    let mut stream = match UnixStream::connect(&path).await {
+        Ok(s) => s,
+        Err(_) => return Ok(()), // Daemon not running, so nothing is locked
+    };
+
+    let payload = wire::encode(&Request::Status)?;
+    let _ = stream.write_all(&payload).await;
+
+    let mut len_buf = [0u8; 4];
+    if stream.read_exact(&mut len_buf).await.is_err() {
+        return Ok(());
+    }
+    let len = u32::from_be_bytes(len_buf) as usize;
+    let mut body = vec![0u8; len];
+    if stream.read_exact(&mut body).await.is_err() {
+        return Ok(());
+    }
+
+    if let Ok(Response::Status(status)) = wire::decode(&body) {
+        if let Some(lock) = status.lock_state {
+            if lock.locked {
+                let now_ms = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64;
+
+                let is_expired = if let Some(unlock_at) = lock.unlock_at {
+                    unlock_at <= now_ms
+                } else {
+                    false // "forever" lock never expires
+                };
+
+                if !is_expired {
+                    anyhow::bail!(
+                        "{} MindGate is currently locked. Destructive operations are disabled.",
+                        theme::err("ERROR:")
+                    );
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -139,6 +201,37 @@ async fn run_status() -> Result<()> {
             println!("{}", theme::bold_pink("--- MindGate Status ---"));
             println!("Daemon Running:      {}", if status.daemon_running { theme::ok("YES") } else { theme::err("NO") });
             println!("Extension Connected: {}", if status.extension_connected { theme::ok("YES") } else { theme::err("NO") });
+            
+            // NEW: Display Lock Status beautifully
+            if let Some(lock) = status.lock_state {
+                if lock.locked {
+                    let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+                    let is_expired = if let Some(unlock_at) = lock.unlock_at {
+                        unlock_at <= now_ms
+                    } else {
+                        false
+                    };
+
+                    if !is_expired {
+                        if let Some(unlock_at) = lock.unlock_at {
+                            let remaining_ms = unlock_at.saturating_sub(now_ms);
+                            let remaining_secs = remaining_ms / 1000;
+                            let hours = remaining_secs / 3600;
+                            let minutes = (remaining_secs % 3600) / 60;
+                            let seconds = remaining_secs % 60;
+                            println!("Lock Status:         {} {}h {}m {}s remaining", theme::err("LOCKED"), hours, minutes, seconds);
+                        } else {
+                            println!("Lock Status:         {} FOREVER", theme::err("LOCKED"));
+                        }
+                    } else {
+                        println!("Lock Status:         {}", theme::ok("UNLOCKED (Expired)"));
+                    }
+                } else {
+                    println!("Lock Status:         {}", theme::ok("UNLOCKED"));
+                }
+            } else {
+                println!("Lock Status:         {}", theme::ok("UNLOCKED"));
+            }
         }
         Response::Error { message } => anyhow::bail!("{message}"),
         _ => anyhow::bail!("Unexpected response from daemon"),
@@ -229,7 +322,7 @@ async fn run_doctor() -> Result<()> {
 async fn check_systemctl_active(unit: &str) -> bool {
     Command::new("systemctl")
         .args(["is-active", "--quiet", unit])
-        .status() // <-- Removed .await here
+        .status()
         .map(|s| s.success())
         .unwrap_or(false)
 }

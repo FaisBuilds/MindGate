@@ -3,6 +3,7 @@ mod self_watch;
 mod server;
 
 use anyhow::Result;
+use mindgate_common::LockState; // NEW: Import LockState from common
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -26,6 +27,9 @@ pub struct AppState {
     /// Prevents the guardian from killing browsers while the daemon is
     /// intentionally shutting down.
     pub shutting_down: AtomicBool,
+    
+    /// NEW: Tracks the current lock state reported by the extension.
+    pub lock_state: Mutex<Option<LockState>>,
 }
 
 /// Waits for a termination signal (SIGINT or SIGTERM).
@@ -74,6 +78,7 @@ async fn main() -> Result<()> {
         last_heartbeat: Mutex::new(None),
         started_at: Instant::now(),
         shutting_down: AtomicBool::new(false),
+        lock_state: Mutex::new(None), // NEW: Initialize lock_state
     });
 
     // Spawn background protection and health tasks
