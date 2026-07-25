@@ -18,7 +18,7 @@
 
 use crate::AppState;
 use anyhow::{Context, Result};
-use mindgate_common::{socket_path, wire, Request, Response, StatusInfo, LockState};
+use mindgate_common::{socket_path, wire, Request, Response, StatusInfo};
 use std::os::unix::io::AsRawFd;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -35,7 +35,7 @@ use tokio::net::{UnixListener, UnixStream};
 /// alarm periods for installed extensions) plus scheduling jitter,
 /// without being so loose that a genuinely dead extension takes
 /// minutes to show up as gone.
-pub(crate) const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(150);
+pub(crate) const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(80);
 
 /// Look up the connecting peer's UID via `SO_PEERCRED`. Returns `None`
 /// if the platform/socket doesn't support it, which callers treat as

@@ -14,7 +14,7 @@
   const LOCK_EXPIRY_ALARM_NAME = "mindgate-lock-expiry";
 
   // Chrome enforces a hard 1-minute FLOOR on chrome.alarms periods for installed extensions.
-  const HEARTBEAT_PERIOD_MINUTES = 1;
+  const HEARTBEAT_PERIOD_MINUTES = 0.5;
 
   function sendToDaemon(payload) {
     return new Promise((resolve, reject) => {
