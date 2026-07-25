@@ -114,6 +114,10 @@
       await chrome.storage.local.remove("lockState");
       const { websites } = await chrome.storage.local.get("websites");
       await syncWebsiteBlockRules(websites || []);
+      // NEW: tell the daemon right away instead of waiting for the next
+      // periodic heartbeat tick — otherwise it keeps enforcing against a
+      // lock_state that, from its point of view, hasn't cleared yet.
+      await sendHeartbeat();
     }
   }
 
@@ -178,6 +182,13 @@
           syncWebsiteBlockRules(data.websites || []);
         });
       });
+      // NEW: push the new lock state to the daemon immediately. Without
+      // this, the daemon only learns about a brand-new lock (or an
+      // explicit unlock) at the next periodic ~60s heartbeat tick, which
+      // runs on its own clock unrelated to when the lock actually
+      // started — the exact gap that let `mindgate stop` slip through
+      // early against a stale cached lock_state.
+      sendHeartbeat();
     }
   });
 
