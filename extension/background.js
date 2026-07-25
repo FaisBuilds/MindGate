@@ -1,177 +1,213 @@
 /**
- * MindGate Background Service Worker (MV3)
- * 
- * Per MVP1: "The browser extension owns blocking. The daemon only protects the blocker."
- * 
- * Responsibilities:
- * 1. Continuously send ExtensionHeartbeat to the daemon.
- * 2. Manage website blocking rules locally via chrome.storage.local.
- * 3. Apply declarativeNetRequest rules instantly when local storage changes.
- */
+   * MindGate Background Service Worker (MV3)
+   * 
+   * Per MVP1: "The browser extension owns blocking. The daemon only protects the blocker."
+   * 
+   * Responsibilities:
+   * 1. Continuously send ExtensionHeartbeat to the daemon.
+   * 2. Manage website blocking rules locally via chrome.storage.local.
+   * 3. Apply declarativeNetRequest rules instantly when local storage changes.
+   */
 
-const HOST_NAME = "com.mindgate.protector";
-const HEARTBEAT_ALARM_NAME = "mindgate-heartbeat";
+  const HOST_NAME = "com.mindgate.protector";
+  const HEARTBEAT_ALARM_NAME = "mindgate-heartbeat";
+  const LOCK_EXPIRY_ALARM_NAME = "mindgate-lock-expiry";
 
-// Chrome enforces a hard 1-minute FLOOR on chrome.alarms periods for installed extensions.
-const HEARTBEAT_PERIOD_MINUTES = 1;
+  // Chrome enforces a hard 1-minute FLOOR on chrome.alarms periods for installed extensions.
+  const HEARTBEAT_PERIOD_MINUTES = 1;
 
-/**
- * Sends a native-messaging request and resolves with the parsed response.
- */
-function sendToDaemon(payload) {
-  return new Promise((resolve, reject) => {
-    chrome.runtime.sendNativeMessage(HOST_NAME, payload, (response) => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
+  function sendToDaemon(payload) {
+    return new Promise((resolve, reject) => {
+      chrome.runtime.sendNativeMessage(HOST_NAME, payload, (response) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+        resolve(response);
+      });
+    });
+  }
+
+  async function sendHeartbeat() {
+    try {
+      const { lockState } = await chrome.storage.local.get("lockState");
+      await sendToDaemon({ 
+        cmd: "ExtensionHeartbeat",
+        lockState: lockState || null 
+      });
+    } catch (e) {
+      console.warn("[MindGate] Heartbeat failed:", e.message);
+    }
+  }
+
+  function isLockActive(lockState) {
+    if (!lockState || !lockState.locked) {
+      return false;
+    }
+    if (!lockState.unlockAt) {
+      return true;
+    }
+    const now = Date.now();
+    if (lockState.unlockAt <= now) {
+      return false;
+    }
+    return true;
+  }
+
+  async function syncWebsiteBlockRules(domains = []) {
+    try {
+      const { lockState } = await chrome.storage.local.get("lockState");
+      const isLocked = isLockActive(lockState);
+      
+      console.log(`[MindGate] syncWebsiteBlockRules: isLocked = ${isLocked}, lockState =`, lockState);
+
+      const existing = await chrome.declarativeNetRequest.getDynamicRules();
+      const removeRuleIds = existing.map((r) => r.id);
+
+      if (!isLocked) {
+        if (removeRuleIds.length > 0) {
+          await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds, addRules: [] });
+          console.log("[MindGate] Unlocked: Website block rules cleared.");
+        } else {
+          console.log("[MindGate] Unlocked: No rules to clear.");
+        }
         return;
       }
-      resolve(response);
-    });
-  });
-}
 
-/**
- * Fire-and-forget heartbeat. 
- */
-async function sendHeartbeat() {
-  try {
-    const { lockState } = await chrome.storage.local.get("lockState");
-    await sendToDaemon({ 
-      cmd: "ExtensionHeartbeat",
-      lockState: lockState || null 
-    });
-  } catch (e) {
-    console.warn("[MindGate] Heartbeat failed:", e.message);
+      const addRules = domains.map((domain, index) => ({
+        id: index + 1,
+        priority: 1,
+        action: {
+          type: "redirect",
+          redirect: { extensionPath: "/block.html?reason=website" },
+        },
+        condition: {
+          urlFilter: `||${domain}^`,
+          resourceTypes: ["main_frame"],
+        },
+      }));
+
+      await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds, addRules });
+      console.log(`[MindGate] Locked: Website block rules synced: ${addRules.length} domain(s).`);
+    } catch (e) {
+      console.error("[MindGate] Failed to sync website block rules:", e.message);
+    }
   }
-}
 
-/**
- * Rebuilds the declarativeNetRequest dynamic ruleset from the local 'websites' list.
- */
-async function syncWebsiteBlockRules(domains = []) {
-  try {
-    // STRICT CHECK: Must be explicitly true
+  /**
+   * NEW: schedules (or clears) a one-shot alarm that fires exactly at unlockAt,
+   * so expiry is detected immediately instead of waiting for the next
+   * heartbeat tick (which can lag by up to ~60s).
+   */
+  async function scheduleLockExpiryAlarm(lockState) {
+    await chrome.alarms.clear(LOCK_EXPIRY_ALARM_NAME);
+    if (lockState && lockState.locked && lockState.unlockAt) {
+      chrome.alarms.create(LOCK_EXPIRY_ALARM_NAME, { when: lockState.unlockAt });
+      console.log(`[MindGate] Scheduled expiry alarm for ${new Date(lockState.unlockAt).toISOString()}`);
+    }
+  }
+
+  async function clearExpiredLockAndSync() {
     const { lockState } = await chrome.storage.local.get("lockState");
-    const isLocked = !!(lockState && lockState.locked === true);
+    if (lockState && lockState.locked && lockState.unlockAt && lockState.unlockAt <= Date.now()) {
+      console.log("[MindGate] Expiry alarm fired: clearing lock and syncing rules.");
+      await chrome.storage.local.remove("lockState");
+      const { websites } = await chrome.storage.local.get("websites");
+      await syncWebsiteBlockRules(websites || []);
+    }
+  }
+
+  async function initializeAndSync() {
+    console.log("[MindGate] Initializing and syncing local rules...");
     
-    console.log(`[MindGate] syncWebsiteBlockRules: isLocked = ${isLocked}`);
-
-    const existing = await chrome.declarativeNetRequest.getDynamicRules();
-    const removeRuleIds = existing.map((r) => r.id);
-
-    // If NOT locked, aggressively clear any existing blocking rules
-    if (!isLocked) {
-      if (removeRuleIds.length > 0) {
-        await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds, addRules: [] });
-        console.log("[MindGate] Unlocked: Website block rules cleared.");
-      } else {
-        console.log("[MindGate] Unlocked: No rules to clear.");
-      }
-      return;
+    const { lockState } = await chrome.storage.local.get("lockState");
+    if (lockState && lockState.locked && lockState.unlockAt && lockState.unlockAt <= Date.now()) {
+      console.log("[MindGate] Found expired lock on startup, clearing...");
+      await chrome.storage.local.remove("lockState");
+    } else {
+      // Re-arm the exact-expiry alarm in case the service worker was
+      // restarted (alarms persist, but do this defensively on init too).
+      await scheduleLockExpiryAlarm(lockState);
     }
 
-    // If LOCKED, apply the rules
-    const addRules = domains.map((domain, index) => ({
-      id: index + 1,
-      priority: 1,
-      action: {
-        type: "redirect",
-        redirect: { extensionPath: "/block.html?reason=website" },
-      },
-      condition: {
-        urlFilter: `||${domain}^`,
-        resourceTypes: ["main_frame"],
-      },
-    }));
+    await sendHeartbeat();
 
-    await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds, addRules });
-    console.log(`[MindGate] Locked: Website block rules synced: ${addRules.length} domain(s).`);
-  } catch (e) {
-    console.error("[MindGate] Failed to sync website block rules:", e.message);
+    const data = await chrome.storage.local.get(["websites", "keywords", "paths", "subreddits"]);
+    const websites = data.websites || [];
+    
+    await syncWebsiteBlockRules(websites);
+    console.log("[MindGate] Local rules initialization complete.");
   }
-}
 
-/**
- * Core initialization and sync. 
- */
-async function initializeAndSync() {
-  console.log("[MindGate] Initializing and syncing local rules...");
-  
-  await sendHeartbeat();
+  chrome.alarms.create(HEARTBEAT_ALARM_NAME, { periodInMinutes: HEARTBEAT_PERIOD_MINUTES });
+  chrome.alarms.onAlarm.addListener(async (alarm) => {
+    if (alarm.name === LOCK_EXPIRY_ALARM_NAME) {
+      await clearExpiredLockAndSync();
+      return;
+    }
+    if (alarm.name === HEARTBEAT_ALARM_NAME) {
+      // Keep this as a safety net in case the exact-expiry alarm was ever
+      // missed (e.g. system sleep), but it's no longer the primary path.
+      await clearExpiredLockAndSync();
+      await sendHeartbeat();
+    }
+  });
 
-  // Fetch websites AND lockState together
-  const data = await chrome.storage.local.get(["websites", "keywords", "paths", "subreddits", "lockState"]);
-  const websites = data.websites || [];
-  
-  await syncWebsiteBlockRules(websites);
-  console.log("[MindGate] Local rules initialization complete.");
-}
-
-// 1. Setup recurring heartbeat alarm
-chrome.alarms.create(HEARTBEAT_ALARM_NAME, { periodInMinutes: HEARTBEAT_PERIOD_MINUTES });
-chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === HEARTBEAT_ALARM_NAME) {
+  setTimeout(() => {
+    console.log("[MindGate] Extension woke up. Sending initial heartbeat...");
     sendHeartbeat();
-  }
-});
+  }, 1000);
 
-setTimeout(() => {
-  console.log("[MindGate] Extension woke up. Sending initial heartbeat...");
-  sendHeartbeat();
-}, 1000);
+  chrome.runtime.onInstalled.addListener(initializeAndSync);
+  chrome.runtime.onStartup.addListener(initializeAndSync);
 
-// 2. Initialize on install, update, or browser startup
-chrome.runtime.onInstalled.addListener(initializeAndSync);
-chrome.runtime.onStartup.addListener(initializeAndSync);
+  chrome.storage.onChanged.addListener((changes, namespace) => {
+    if (namespace !== "local") return;
+    
+    if (changes.websites) {
+      console.log("[MindGate] Websites changed in storage, updating dNR rules...");
+      syncWebsiteBlockRules(changes.websites.newValue || []);
+    }
+    
+    if (changes.lockState) {
+      console.log("[MindGate] Lock state changed, re-evaluating dNR rules...");
+      // NEW: (re)schedule the exact-expiry alarm whenever lockState changes,
+      // e.g. when a fresh lock is created via the popup.
+      scheduleLockExpiryAlarm(changes.lockState.newValue).then(() => {
+        chrome.storage.local.get(["websites"]).then(data => {
+          syncWebsiteBlockRules(data.websites || []);
+        });
+      });
+    }
+  });
 
-// 3. INSTANT reactivity
-chrome.storage.onChanged.addListener((changes, namespace) => {
-  if (namespace !== "local") return;
-  
-  if (changes.websites) {
-    console.log("[MindGate] Websites changed in storage, updating dNR rules...");
-    syncWebsiteBlockRules(changes.websites.newValue || []);
-  }
-  
-  if (changes.lockState) {
-    console.log("[MindGate] Lock state changed, re-evaluating dNR rules...");
-    chrome.storage.local.get(["websites"]).then(data => {
-      syncWebsiteBlockRules(data.websites || []);
+  function hostMatchesBlockedDomain(hostname, domains) {
+    const host = hostname.toLowerCase();
+    return domains.some((d) => {
+      const domain = (d || "").toLowerCase();
+      return domain && (host === domain || host.endsWith("." + domain));
     });
   }
-});
 
-/**
- * Self-heal for the DNS-blackhole / declarativeNetRequest sync race.
- */
-function hostMatchesBlockedDomain(hostname, domains) {
-  const host = hostname.toLowerCase();
-  return domains.some((d) => {
-    const domain = (d || "").toLowerCase();
-    return domain && (host === domain || host.endsWith("." + domain));
+  chrome.webNavigation.onErrorOccurred.addListener(async (details) => {
+    if (details.frameId !== 0) return;
+    if (details.error !== "net::ERR_NAME_NOT_RESOLVED") return;
+
+    let hostname;
+    try {
+      hostname = new URL(details.url).hostname;
+    } catch {
+      return;
+    }
+    if (!hostname) return;
+
+    const data = await chrome.storage.local.get(["websites", "lockState"]);
+    const domains = data.websites || [];
+    const isLocked = isLockActive(data.lockState);
+    
+    if (isLocked && hostMatchesBlockedDomain(hostname, domains)) {
+      console.log(`[MindGate] Self-heal: Redirecting blocked domain ${hostname} to block page.`);
+      const blockUrl = chrome.runtime.getURL("block.html") + "?reason=website";
+      chrome.tabs.update(details.tabId, { url: blockUrl });
+    }
   });
-}
-
-chrome.webNavigation.onErrorOccurred.addListener(async (details) => {
-  if (details.frameId !== 0) return; // Main frame only
-  if (details.error !== "net::ERR_NAME_NOT_RESOLVED") return;
-
-  let hostname;
-  try {
-    hostname = new URL(details.url).hostname;
-  } catch {
-    return;
-  }
-  if (!hostname) return;
-
-  const data = await chrome.storage.local.get(["websites", "lockState"]);
-  const domains = data.websites || [];
-  const isLocked = !!(data.lockState && data.lockState.locked === true);
-  
-  // STRICT CHECK: Only self-heal redirect if we are actually locked
-  if (isLocked && hostMatchesBlockedDomain(hostname, domains)) {
-    console.log(`[MindGate] Self-heal: Redirecting blocked domain ${hostname} to block page.`);
-    const blockUrl = chrome.runtime.getURL("block.html") + "?reason=website";
-    chrome.tabs.update(details.tabId, { url: blockUrl });
-  }
-});

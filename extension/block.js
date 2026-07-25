@@ -78,7 +78,7 @@
   // to match the updated architecture.
   function formatRemaining(lockState) {
     if (!lockState || !lockState.locked) {
-      return "Active";
+      return "Unlocked";
     }
 
     if (lockState.unlockAt === null || lockState.unlockAt === undefined) {

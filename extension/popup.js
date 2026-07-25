@@ -217,7 +217,7 @@
   loadAll();
 
   // ==========================================
-  // NEW: FLEXIBLE FOCUS LOCK LOGIC
+  // FOCUS LOCK UI LOGIC (UI ONLY)
   // ==========================================
 
   function updateLockUI(lockState) {
@@ -263,6 +263,7 @@
     clearInterval(window.lockTimer);
   }
 
+  // UI-ONLY Timer: Does NOT clear storage. Background.js handles expiration.
   function startTimerCountdown(unlockAt) {
     clearInterval(window.lockTimer);
     
@@ -275,11 +276,11 @@
       document.getElementById("timer-display").textContent = 
         `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
       
+      // NOTE: We do NOT clear storage here. If the popup is closed, this interval dies.
+      // background.js is responsible for checking expiration and clearing storage.
       if (remaining <= 0) {
         clearInterval(window.lockTimer);
-        chrome.storage.local.remove("lockState").then(() => {
-          unlockSystem();
-        });
+        unlockSystem();
       }
     };
     
@@ -314,7 +315,7 @@
   });
 
   // ==========================================
-  // NEW: DYNAMIC MAX LIMITS FOR CUSTOM INPUT
+  // DYNAMIC MAX LIMITS FOR CUSTOM INPUT
   // ==========================================
   const unitSelect = document.getElementById("custom-unit");
   const durationInput = document.getElementById("custom-duration");
@@ -332,7 +333,6 @@
     const selectedUnit = unitSelect.value;
     durationInput.max = maxLimits[selectedUnit] || 180;
     
-    // Clear the input value if it exceeds the new max to prevent UI confusion
     const currentVal = parseInt(durationInput.value, 10);
     if (currentVal > durationInput.max) {
       durationInput.value = durationInput.max;
@@ -344,7 +344,7 @@
     updateLockUI(data.lockState);
   });
 
-  // Listen for lock state changes (e.g., if background.js updates it, or timer expires)
+  // Listen for lock state changes
   chrome.storage.onChanged.addListener((changes) => {
     if (changes.lockState) {
       updateLockUI(changes.lockState.newValue);
