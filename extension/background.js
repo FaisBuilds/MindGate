@@ -189,6 +189,71 @@
     });
   }
 
+  // ==========================================
+  // NEW: remember the real URL behind a block, so we can send the tab
+  // back to it once the lock clears (instead of just saying "open a new
+  // tab"). Stored in chrome.storage.session — cleared automatically when
+  // the browser session ends, and separate from the persistent 'local'
+  // namespace used for rules/lockState.
+  // ==========================================
+
+  function sessionKeyForTab(tabId) {
+    return `originalUrl:${tabId}`;
+  }
+
+  chrome.webNavigation.onBeforeNavigate.addListener(async (details) => {
+    if (details.frameId !== 0) return; // main frame only
+
+    let hostname;
+    try {
+      hostname = new URL(details.url).hostname;
+    } catch {
+      return;
+    }
+    if (!hostname) return;
+
+    const data = await chrome.storage.local.get(["websites", "lockState"]);
+    const domains = data.websites || [];
+    const isLocked = isLockActive(data.lockState);
+
+    // Only remember it if this navigation is actually about to be blocked.
+    if (isLocked && hostMatchesBlockedDomain(hostname, domains)) {
+      await chrome.storage.session.set({ [sessionKeyForTab(details.tabId)]: details.url });
+    }
+  });
+
+  // Best-effort cleanup so stale entries don't pile up in session storage.
+  chrome.tabs.onRemoved.addListener((tabId) => {
+    chrome.storage.session.remove(sessionKeyForTab(tabId)).catch(() => {});
+  });
+
+  // Single source of truth for "is it still locked right now", plus a way
+  // for block.js to fetch back the URL it was originally headed to.
+  // Keeping this logic here (instead of duplicating isLockActive in
+  // block.js) avoids the two files drifting out of sync again.
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (!message || typeof message !== "object") return;
+
+    if (message.cmd === "checkLock") {
+      chrome.storage.local.get("lockState").then(({ lockState }) => {
+        sendResponse({ isLocked: isLockActive(lockState) });
+      });
+      return true; // keep the message channel open for the async response
+    }
+
+    if (message.cmd === "getOriginalUrl") {
+      const tabId = sender.tab && sender.tab.id;
+      if (tabId === undefined) {
+        sendResponse({ url: null });
+        return true;
+      }
+      chrome.storage.session.get(sessionKeyForTab(tabId)).then((data) => {
+        sendResponse({ url: data[sessionKeyForTab(tabId)] || null });
+      });
+      return true;
+    }
+  });
+
   chrome.webNavigation.onErrorOccurred.addListener(async (details) => {
     if (details.frameId !== 0) return;
     if (details.error !== "net::ERR_NAME_NOT_RESOLVED") return;

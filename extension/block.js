@@ -161,4 +161,54 @@
     setLockValue();
   }, 1000);
 
+  // ==========================================
+  // NEW: RETURN TO THE REAL PAGE ONCE UNLOCKED
+  // ==========================================
+  //
+  // background.js is the single source of truth for "is it still locked"
+  // (via the exact-expiry alarm) and for remembering which URL this tab
+  // was actually headed to before it got redirected here. We just ask it.
+  //
+  // This runs:
+  //   1. Once immediately on load — covers a plain reload/Ctrl+R after
+  //      the lock has already expired.
+  //   2. On every chrome.storage.onChanged for 'lockState' — covers the
+  //      case where the tab is just sitting on this page when the lock
+  //      expires, so it recovers on its own without needing a reload.
+
+  let redirecting = false;
+
+  function checkLockAndMaybeReturn() {
+    if (redirecting) return;
+
+    chrome.runtime.sendMessage({ cmd: "checkLock" }, (lockResponse) => {
+      if (chrome.runtime.lastError) {
+        console.warn("[MindGate] checkLock failed:", chrome.runtime.lastError.message);
+        return;
+      }
+      if (!lockResponse || lockResponse.isLocked) return;
+
+      chrome.runtime.sendMessage({ cmd: "getOriginalUrl" }, (urlResponse) => {
+        if (chrome.runtime.lastError) {
+          console.warn("[MindGate] getOriginalUrl failed:", chrome.runtime.lastError.message);
+          return;
+        }
+        const url = urlResponse && urlResponse.url;
+        if (url) {
+          redirecting = true;
+          window.location.replace(url);
+        }
+      });
+    });
+  }
+
+  checkLockAndMaybeReturn();
+
+  chrome.storage.onChanged.addListener((changes, namespace) => {
+    if (namespace !== "local") return;
+    if (changes.lockState) {
+      checkLockAndMaybeReturn();
+    }
+  });
+
 })();
