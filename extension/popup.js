@@ -351,4 +351,42 @@
     }
   });
 
+  // ==========================================
+  // NEW: INCOGNITO ACCESS WARNING
+  // ==========================================
+  //
+  // Chrome extensions can't self-grant incognito access — only the
+  // user can flip it on in chrome://extensions. This just makes sure
+  // they notice if it's off, and clears itself the moment it's on,
+  // via a live check (not a stored flag) so it can never go stale.
+  // Purely additive: doesn't touch any existing element, listener, or
+  // storage key above.
+
+  function checkIncognitoAccess() {
+    const banner = document.getElementById("incognito-warning");
+    if (!banner) return; // defensive: don't throw if markup is missing
+
+    try {
+      chrome.extension.isAllowedIncognitoAccess((allowed) => {
+        banner.style.display = allowed ? "none" : "block";
+      });
+    } catch (e) {
+      // If this API is ever unavailable for some reason, fail quietly
+      // rather than breaking the rest of the popup.
+      console.warn("[MindGate] Could not check incognito access:", e.message);
+    }
+  }
+
+  const incognitoBtn = document.getElementById("incognito-warning-btn");
+  if (incognitoBtn) {
+    incognitoBtn.addEventListener("click", () => {
+      chrome.tabs.create({ url: "chrome://extensions" });
+    });
+  }
+
+  // Checked every time the popup opens (this whole file re-runs then),
+  // so toggling the setting and reopening the popup is enough to
+  // clear the banner — no extra listener needed.
+  checkIncognitoAccess();
+
 })();

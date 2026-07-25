@@ -3,11 +3,18 @@
 # MindGate MVP1 Installer
 #
 # Steps:
-#   1. Builds release binaries (`mindgated` daemon & `mindgate` CLI).
-#   2. Installs binaries to /usr/local/bin (root-owned).
-#   3. Creates /etc/mindgate and owner.env for non-root IPC authorization.
-#   4. Installs Native Messaging Hosts globally across all Chromium browsers.
-#   5. Configures systemd services for both Daemon and Watchdog.
+#   1. Makes sure a Rust toolchain and a C linker exist (installs them if not).
+#   2. Builds release binaries (`mindgated` daemon & `mindgate` CLI).
+#   3. Installs binaries to /usr/local/bin (root-owned).
+#   4. Creates /etc/mindgate and owner.env for non-root IPC authorization.
+#   5. Installs Native Messaging Hosts globally across all Chromium browsers.
+#   6. Configures systemd services for both Daemon and Watchdog.
+#
+# Distro posture: best-effort across any systemd-based Linux distro, not
+# Debian/Mint-specific. Anything distro-specific (package manager calls)
+# is wrapped so an unrecognized distro degrades to "skip and warn" rather
+# than aborting the whole install — same "fail gracefully, not
+# catastrophically" posture as the daemon itself (see self_watch.rs).
 
 set -euo pipefail
 
@@ -26,16 +33,71 @@ REAL_HOME="$(getent passwd "${REAL_USER}" | cut -d: -f6)"
 # PERMANENT Extension ID (locked via manifest.json "key")
 EXTENSION_ID="gpdnmbmmmlgopipgnddldnihapebjkfn"
 
-echo "[1/5] Building release binaries..."
-cd "${REPO_ROOT}"
-# cargo build --release
+# ------------------------------------------------------------------
+# [1/6] Build prerequisites: Rust toolchain + C linker
+# ------------------------------------------------------------------
+#
+# The build below runs as root (the whole script does, via sudo), so
+# what matters is whether ROOT's environment has cargo — not whether
+# the real human already has Rust in their own ~/.cargo. If root
+# doesn't have it, we install one via rustup so this script works on
+# a genuinely fresh machine, not just the maintainer's dev box.
 
-echo "[2/5] Installing binaries to ${INSTALL_BIN_DIR}..."
+echo "[1/6] Checking build prerequisites..."
+
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "  -> Rust toolchain not found for root. Installing via rustup..."
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+  # shellcheck source=/dev/null
+  source "${HOME}/.cargo/env"
+  echo "  ✓ Rust installed."
+else
+  echo "  ✓ Rust toolchain already present ($(cargo --version))."
+fi
+
+if ! command -v cc >/dev/null 2>&1 && ! command -v gcc >/dev/null 2>&1 && ! command -v clang >/dev/null 2>&1; then
+  echo "  -> No C linker found. Attempting to install one for your distro..."
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update -qq && apt-get install -y -qq build-essential
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y -q gcc make
+  elif command -v pacman >/dev/null 2>&1; then
+    pacman -Sy --noconfirm --needed base-devel
+  elif command -v zypper >/dev/null 2>&1; then
+    zypper --non-interactive install -t pattern devel_basis
+  else
+    echo "  ! Could not detect a supported package manager (apt/dnf/pacman/zypper)." >&2
+    echo "    Please install a C compiler (gcc or clang) manually, then re-run this script." >&2
+    exit 1
+  fi
+  echo "  ✓ C toolchain installed."
+else
+  echo "  ✓ C linker already present."
+fi
+
+# ------------------------------------------------------------------
+# [2/6] Build release binaries
+# ------------------------------------------------------------------
+
+echo "[2/6] Building release binaries..."
+cd "${REPO_ROOT}"
+cargo build --release
+echo "  ✓ Build complete."
+
+# ------------------------------------------------------------------
+# [3/6] Install binaries
+# ------------------------------------------------------------------
+
+echo "[3/6] Installing binaries to ${INSTALL_BIN_DIR}..."
 install -o root -g root -m 755 target/release/mindgated "${INSTALL_BIN_DIR}/mindgated"
 install -o root -g root -m 755 target/release/mindgate  "${INSTALL_BIN_DIR}/mindgate"
 echo "  ✓ Binaries installed."
 
-echo "[3/5] Setting up configuration directory (${CONFIG_DIR})..."
+# ------------------------------------------------------------------
+# [4/6] Configuration directory
+# ------------------------------------------------------------------
+
+echo "[4/6] Setting up configuration directory (${CONFIG_DIR})..."
 mkdir -p "${CONFIG_DIR}"
 chown root:root "${CONFIG_DIR}"
 chmod 700 "${CONFIG_DIR}"
@@ -45,7 +107,11 @@ echo "MINDGATE_OWNER_UID=${REAL_UID}" > "${CONFIG_DIR}/owner.env"
 chmod 644 "${CONFIG_DIR}/owner.env"
 echo "  ✓ Configuration directory ready."
 
-echo "[4/5] Generating Native Messaging Bridge & Manifests..."
+# ------------------------------------------------------------------
+# [5/6] Native Messaging bridge & manifests
+# ------------------------------------------------------------------
+
+echo "[5/6] Generating Native Messaging Bridge & Manifests..."
 BRIDGE_SCRIPT="${INSTALL_BIN_DIR}/mindgate-bridge.sh"
 cat > "${BRIDGE_SCRIPT}" <<BRIDGE_EOF
 #!/bin/bash
@@ -67,6 +133,7 @@ declare -a GLOBAL_NMH_DIRS=(
   "/etc/opt/microsoft-edge/native-messaging-hosts"
 )
 
+installed_any_nmh=false
 for dir in "${GLOBAL_NMH_DIRS[@]}"; do
   parent="$(dirname "${dir}")"
   # Create directory if parent exists (e.g., /etc/opt or /etc)
@@ -85,10 +152,21 @@ for dir in "${GLOBAL_NMH_DIRS[@]}"; do
 MANIFEST_EOF
     chmod 644 "${dir}/${NMH_MANIFEST_NAME}"
     echo "  -> Installed global manifest in ${dir}"
+    installed_any_nmh=true
   fi
 done
 
-echo "[5/5] Registering and starting systemd services..."
+if [[ "${installed_any_nmh}" == false ]]; then
+  echo "  ! No supported Chromium browser directories found yet." >&2
+  echo "    This is fine if you haven't installed a browser yet — just" >&2
+  echo "    re-run this script after installing one." >&2
+fi
+
+# ------------------------------------------------------------------
+# [6/6] systemd services
+# ------------------------------------------------------------------
+
+echo "[6/6] Registering and starting systemd services..."
 install -m 644 "${REPO_ROOT}/installer/systemd/mindgated.service" \
   /etc/systemd/system/mindgated.service
 install -m 644 "${REPO_ROOT}/installer/systemd/mindgate-watchdog.service" \
@@ -103,18 +181,29 @@ systemctl enable mindgated.service mindgate-watchdog.service
 systemctl restart mindgated.service
 systemctl restart mindgate-watchdog.service
 
+# ------------------------------------------------------------------
+# Done — clear, ordered, no-fluff instructions for what's left
+# ------------------------------------------------------------------
+
 echo
 echo "=========================================================="
-echo " MindGate installation complete!"
-echo " Daemon & Watchdog services are live and enabled on boot."
+echo " MindGate is installed and running."
 echo "=========================================================="
 echo
-echo "To finish setup:"
-echo " 1. Completely close all Chrome/Chromium windows."
-echo " 2. Open Chrome and go to chrome://extensions."
-echo " 3. Remove the old MindGate extension if it exists."
-echo " 4. Enable 'Developer mode' and click 'Load unpacked'."
-echo " 5. Select the 'extension/' directory in this repository."
-echo " 6. Enable 'Allow in Incognito' for full protection."
+echo "The daemon and watchdog are enabled and will start on every boot."
+echo "One manual step remains — Chrome doesn't let an installer load"
+echo "an extension for you, so you'll need to do this once yourself:"
 echo
-echo "Run 'mindgate doctor' to check connection status."
+echo "  1. Open chrome://extensions in your browser."
+echo "  2. Turn on 'Developer mode' (top-right toggle)."
+echo "  3. Click 'Load unpacked' and select this folder:"
+echo "       ${REPO_ROOT}/extension"
+echo "  4. Find the MindGate card and turn on 'Allow in incognito' —"
+echo "     without this, incognito windows won't be protected."
+echo "  5. Repeat steps 1-4 in any other Chromium browser profile"
+echo "     you also want MindGate to protect (each browser and each"
+echo "     profile needs its own copy loaded)."
+echo
+echo "To check everything is connected correctly, run:"
+echo "  mindgate doctor"
+echo
