@@ -37,22 +37,22 @@ EXTENSION_ID="gpdnmbmmmlgopipgnddldnihapebjkfn"
 # [1/6] Build prerequisites: Rust toolchain + C linker
 # ------------------------------------------------------------------
 #
-# The build below runs as root (the whole script does, via sudo), so
-# what matters is whether ROOT's environment has cargo — not whether
-# the real human already has Rust in their own ~/.cargo. If root
-# doesn't have it, we install one via rustup so this script works on
-# a genuinely fresh machine, not just the maintainer's dev box.
+# Checked/installed for REAL_USER, not root — see [2/6] below for why
+# the build itself also runs as REAL_USER rather than root. This
+# project's Cargo.lock also needs a genuinely current stable Rust
+# (confirmed: an older distro-packaged rustc fails with "feature
+# edition2024 is required"), so an apt/dnf/pacman Rust package is not
+# a safe fallback here — rustup is the one that actually works.
 
 echo "[1/6] Checking build prerequisites..."
 
-if ! command -v cargo >/dev/null 2>&1; then
-  echo "  -> Rust toolchain not found for root. Installing via rustup..."
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-  # shellcheck source=/dev/null
-  source "${HOME}/.cargo/env"
-  echo "  ✓ Rust installed."
+if ! sudo -u "${REAL_USER}" bash -lc 'command -v cargo' >/dev/null 2>&1; then
+  echo "  -> Rust toolchain not found for ${REAL_USER}. Installing via rustup..."
+  sudo -u "${REAL_USER}" bash -c \
+    "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable"
+  echo "  ✓ Rust installed for ${REAL_USER}."
 else
-  echo "  ✓ Rust toolchain already present ($(cargo --version))."
+  echo "  ✓ Rust toolchain already present for ${REAL_USER} ($(sudo -u "${REAL_USER}" bash -lc 'cargo --version'))."
 fi
 
 if ! command -v cc >/dev/null 2>&1 && ! command -v gcc >/dev/null 2>&1 && ! command -v clang >/dev/null 2>&1; then
@@ -74,14 +74,28 @@ if ! command -v cc >/dev/null 2>&1 && ! command -v gcc >/dev/null 2>&1 && ! comm
 else
   echo "  ✓ C linker already present."
 fi
+# C linker is a system-wide package, so this part is fine to install as
+# root regardless of who ends up running cargo.
 
 # ------------------------------------------------------------------
 # [2/6] Build release binaries
 # ------------------------------------------------------------------
+#
+# Built as REAL_USER, deliberately NOT as root — even though this whole
+# script runs under sudo. If you'd already built manually as yourself
+# before running this script, building again as root here would use a
+# completely separate, cache-cold toolchain and could leave target/
+# with mixed ownership. Building as REAL_USER reuses whatever you
+# already have and keeps target/ consistently owned by you.
 
-echo "[2/6] Building release binaries..."
-cd "${REPO_ROOT}"
-cargo build --release
+echo "[2/6] Building release binaries (as ${REAL_USER})..."
+# Only fix target/'s ownership (in case an earlier attempt built it as
+# root) — not the whole repo, so this can't touch .git or anything
+# else you care about the ownership of.
+if [[ -d "${REPO_ROOT}/target" ]]; then
+  chown -R "${REAL_USER}" "${REPO_ROOT}/target" 2>/dev/null || true
+fi
+sudo -u "${REAL_USER}" bash -lc "cd '${REPO_ROOT}' && cargo build --release"
 echo "  ✓ Build complete."
 
 # ------------------------------------------------------------------
