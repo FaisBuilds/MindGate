@@ -103,8 +103,8 @@ echo "  ✓ Build complete."
 # ------------------------------------------------------------------
 
 echo "[3/6] Installing binaries to ${INSTALL_BIN_DIR}..."
-install -o root -g root -m 755 target/release/mindgated "${INSTALL_BIN_DIR}/mindgated"
-install -o root -g root -m 755 target/release/mindgate  "${INSTALL_BIN_DIR}/mindgate"
+install -o root -g root -m 755 "${REPO_ROOT}/target/release/mindgated" "${INSTALL_BIN_DIR}/mindgated"
+install -o root -g root -m 755 "${REPO_ROOT}/target/release/mindgate"  "${INSTALL_BIN_DIR}/mindgate"
 echo "  ✓ Binaries installed."
 
 # ------------------------------------------------------------------
