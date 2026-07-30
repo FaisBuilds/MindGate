@@ -1,0 +1,55 @@
+/**
+ * MindGate — shared theme tokens
+ *
+ * Single source of truth for color + font values across the popup,
+ * the block page, and the landing page. Change a value here once and
+ * it propagates everywhere that references the variable.
+ *
+ * NOTE: Google Fonts are loaded via <link> tags in each HTML file's
+ * <head> (Space Grotesk, JetBrains Mono, Inter, Instrument Serif).
+ * If this extension has a restrictive Content-Security-Policy in
+ * manifest.json, you may need to add font.googleapis.com /
+ * fonts.gstatic.com to connect-src / style-src / font-src, or vendor
+ * the font files locally instead. Flagging this since manifest.json
+ * wasn't part of this upload.
+ */
+
+:root {
+  /* ---------- base tokens ---------- */
+  --bg: #0a0a0b;
+  --surface: #17171a;
+  --text-primary: #e8e3df;
+  --text-secondary: #8a8f98;
+  --accent: #ff3c1f;
+
+  /* ---------- accent, pre-mixed at the alpha values the old pink
+     tokens used, so every rgba() in the original files has a 1:1
+     replacement here ---------- */
+  --accent-a05: rgba(255, 60, 31, 0.05);
+  --accent-a06: rgba(255, 60, 31, 0.06);
+  --accent-a08: rgba(255, 60, 31, 0.08);
+  --accent-a10: rgba(255, 60, 31, 0.10);
+  --accent-a12: rgba(255, 60, 31, 0.12);
+  --accent-a15: rgba(255, 60, 31, 0.15);
+  --accent-a16: rgba(255, 60, 31, 0.16);
+  --accent-a18: rgba(255, 60, 31, 0.18);
+  --accent-a20: rgba(255, 60, 31, 0.20);
+  --accent-a22: rgba(255, 60, 31, 0.22);
+  --accent-a25: rgba(255, 60, 31, 0.25);
+  --accent-a30: rgba(255, 60, 31, 0.30);
+  --accent-a35: rgba(255, 60, 31, 0.35);
+  --accent-a40: rgba(255, 60, 31, 0.40);
+  --accent-a45: rgba(255, 60, 31, 0.45);
+  --accent-a50: rgba(255, 60, 31, 0.50);
+  --accent-a55: rgba(255, 60, 31, 0.55);
+  --accent-a60: rgba(255, 60, 31, 0.60);
+
+  /* text-secondary at reduced opacity, for the dimmer footer/placeholder tier */
+  --text-secondary-dim: rgba(138, 143, 152, 0.75);
+
+  /* ---------- fonts ---------- */
+  --font-heading: "Space Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Courier New", Courier, monospace;
+  --font-body: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-quote: "Instrument Serif", Georgia, "Iowan Old Style", "Palatino Linotype", "Times New Roman", serif;
+}

@@ -3,13 +3,16 @@
 <head>
 <meta charset="UTF-8">
 <title>MindGate</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;500&family=Instrument+Serif:ital@1&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="popup.css">
 </head>
 <body>
   <div class="glow"></div>
 
   <div class="header">
-    <img class="mark" src="icons/logo.png" alt="MindGate">
+    <img class="mark" src="icons/icon48.png" alt="MindGate">
     <div class="header-text">
       <div class="title">MindGate</div>
       <div class="status">
@@ -28,6 +31,10 @@
   <!-- shown/hidden by popup.js based on a live      -->
   <!-- check, not a stored flag, so it clears itself -->
   <!-- the moment the user flips the setting on)     -->
+  <!-- NOTE: colors here are an existing warning-     -->
+  <!-- state palette, intentionally left as-is —      -->
+  <!-- flagged as a separate concern from the brand   -->
+  <!-- accent re-theme (see chat response).           -->
   <!-- ========================================== -->
   <div id="incognito-warning" style="display:none; margin: 8px 12px; padding: 10px 12px; border-radius: 6px; background: #3a2a10; border: 1px solid #7a5a1a; color: #f0d9a8; font-size: 12px; line-height: 1.5;">
     <div style="margin-bottom: 6px;">
