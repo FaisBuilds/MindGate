@@ -1,0 +1,20 @@
+[package]
+name = "system-lock-resume"
+version = "0.1.0"
+edition = "2021"
+description = "Adapter: tracks whether the Linux session is locked or the system is suspended, via systemd-logind over D-Bus."
+publish = false
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+# default-features = false: skip zbus's async-io/async-executor stack entirely.
+# The daemon already runs a tokio runtime (see main.rs's #[tokio::main]), so
+# this adapter rides that runtime instead of spinning up a second one.
+zbus = { version = "4", default-features = false, features = ["tokio"] }
+tokio = { version = "1", features = ["rt", "macros", "time", "sync"] }
+futures-util = { version = "0.3", default-features = false, features = ["async-await"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }

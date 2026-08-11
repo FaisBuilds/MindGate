@@ -9,6 +9,7 @@ name = "mindgated"
 path = "src/main.rs"
 
 [dependencies]
+system-lock-resume = { path = "../adapters/system-lock-resume" }
 mindgate-common = { path = "../common" }
 serde.workspace = true
 serde_json.workspace = true
@@ -21,3 +22,4 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 rand_core = { version = "0.6", features = ["std"] }
 libc = "0.2"
+clap = { workspace = true, features = ["derive"] }

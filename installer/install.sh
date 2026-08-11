@@ -15,6 +15,14 @@
 # is wrapped so an unrecognized distro degrades to "skip and warn" rather
 # than aborting the whole install — same "fail gracefully, not
 # catastrophically" posture as the daemon itself (see self_watch.rs).
+#
+# Opera note: deliberately NOT given its own native-messaging directory
+# here. Opera has a documented history of resolving native-messaging
+# manifests via Chrome's own path rather than a directory of its own on
+# Linux, so it's likely already covered by the chrome/chromium entries
+# below. Untested on real Opera though — see SCOPE.md, which already
+# marks Opera as "expected to work, not yet hands-on verified." Revisit
+# only if a real Opera user reports it not connecting.
 
 set -euo pipefail
 
@@ -78,6 +86,27 @@ fi
 # root regardless of who ends up running cargo.
 
 # ------------------------------------------------------------------
+# [1.5/6] Runtime dependency check: systemd-logind reachability
+# ------------------------------------------------------------------
+#
+# The system-lock-resume adapter talks to systemd-logind over the
+# system D-Bus at runtime to detect lock/suspend and protect against
+# the false-kill-on-lock bug. It fails safe to "unlocked" if logind
+# is unreachable — correct daemon behavior, but a silent surprise if
+# discovered mid-lock days later instead of here, up front.
+
+echo "[1.5/6] Checking systemd-logind reachability..."
+if command -v loginctl >/dev/null 2>&1 && loginctl list-sessions >/dev/null 2>&1; then
+  echo "  ✓ systemd-logind is reachable."
+else
+  echo "  ! Could not reach systemd-logind (loginctl unavailable or errored)." >&2
+  echo "    MindGate will still install and run, but lock/suspend detection" >&2
+  echo "    will not work — the daemon may close your browser if you lock" >&2
+  echo "    the screen for longer than the heartbeat timeout." >&2
+  echo "    This is expected on non-systemd or unusual minimal setups." >&2
+fi
+
+# ------------------------------------------------------------------
 # [2/6] Build release binaries
 # ------------------------------------------------------------------
 #
@@ -138,7 +167,12 @@ chown root:root "${BRIDGE_SCRIPT}"
 
 NMH_MANIFEST_NAME="com.mindgate.protector.json"
 
-# GLOBAL directories (Most reliable, applies to all users/profiles of the browser)
+# GLOBAL directories (Most reliable, applies to all users/profiles of the
+# browser). NOTE: uninstall.sh's cleanup step must always mirror this
+# exact list — they drifted out of sync once already (uninstall.sh was
+# looking in per-user ~/.config/ paths that install.sh never wrote to,
+# silently leaving every manifest behind on every uninstall). Keep both
+# lists identical if this ever changes.
 declare -a GLOBAL_NMH_DIRS=(
   "/etc/opt/chrome/native-messaging-hosts"
   "/etc/chromium/native-messaging-hosts"
@@ -221,3 +255,12 @@ echo
 echo "To check everything is connected correctly, run:"
 echo "  mindgate doctor"
 echo
+
+# Best-effort: land the user directly on chrome://extensions instead of
+# making them navigate there themselves. Can't be forced further than
+# this — Chrome deliberately blocks any installer from flipping
+# Developer Mode or clicking Load Unpacked on the user's behalf, for
+# security reasons outside this script's control. Silently does
+# nothing if no browser/xdg-open is available (e.g. a headless
+# server), which is fine, the printed instructions above still stand.
+sudo -u "${REAL_USER}" xdg-open "chrome://extensions" >/dev/null 2>&1 || true

@@ -10,6 +10,7 @@
 
 use crate::server::HEARTBEAT_TIMEOUT;
 use crate::AppState;
+use system_lock_resume::LockWatcher; // ADD THIS
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::process::Command;
@@ -57,7 +58,7 @@ async fn close_supported_browsers(state: &AppState) {
 }
 
 /// Spawns the background task. Call once from `main.rs`.
-pub fn spawn(state: Arc<AppState>) {
+pub fn spawn(state: Arc<AppState>, lock_watcher: LockWatcher) { // CHANGED
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(CHECK_INTERVAL);
         loop {
@@ -70,17 +71,23 @@ pub fn spawn(state: Arc<AppState>) {
             let last_heartbeat = *state.last_heartbeat.lock().await;
             let stale = match last_heartbeat {
                 Some(t) => t.elapsed() >= HEARTBEAT_TIMEOUT,
-                // No heartbeat ever received, and we're past the startup grace period.
                 None => true,
             };
 
             if stale {
+                // ADD THIS BLOCK
+                if lock_watcher.is_locked() {
+                    tracing::info!(
+                        "guardian: heartbeat stale but session is locked — not closing browsers"
+                    );
+                    continue;
+                }
+
                 tracing::warn!(
                     "guardian: no heartbeat from extension in over {:?} — extension is \
                      missing, disabled, or crashed. Closing supported browsers.",
                     HEARTBEAT_TIMEOUT
                 );
-                // FIX: Pass state to the function
                 close_supported_browsers(&state).await;
             }
         }

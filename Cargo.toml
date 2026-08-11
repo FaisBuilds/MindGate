@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["common", "daemon", "cli"]
+members = ["common", "daemon", "cli", "adapters/system-lock-resume", ]
 
 [workspace.package]
 version = "0.1.0"

@@ -59,29 +59,34 @@ rm -rf "${CONFIG_DIR}"
 echo "  ✓ Configuration removed."
 
 # 5. Remove Native Messaging manifests from all browsers
+#
+# FIX: install.sh writes manifests to GLOBAL, system-wide directories
+# (/etc/opt/..., /etc/chromium/...), not per-user ~/.config/ paths.
+# The previous version of this script looked in ~/.config/ and would
+# therefore NEVER find or remove anything install.sh actually created
+# — every uninstall silently left stale manifests behind pointing at
+# a bridge script that no longer exists. This list must always match
+# install.sh's GLOBAL_NMH_DIRS exactly, or this bug comes back.
 echo "[5/5] Removing Native Messaging manifests..."
-REAL_USER="${SUDO_USER:-$(logname 2>/dev/null || echo root)}"
-REAL_HOME="$(getent passwd "${REAL_USER}" | cut -d: -f6)"
-
-declare -A BROWSERS=(
-  ["Google Chrome"]="${REAL_HOME}/.config/google-chrome"
-  ["Chromium"]="${REAL_HOME}/.config/chromium"
-  ["Brave"]="${REAL_HOME}/.config/BraveSoftware/Brave-Browser"
-  ["Vivaldi"]="${REAL_HOME}/.config/vivaldi"
-  ["Microsoft Edge"]="${REAL_HOME}/.config/microsoft-edge"
-  ["Opera"]="${REAL_HOME}/.config/opera"
-)
 
 NMH_MANIFEST_NAME="com.mindgate.protector.json"
+
+declare -a GLOBAL_NMH_DIRS=(
+  "/etc/opt/chrome/native-messaging-hosts"
+  "/etc/chromium/native-messaging-hosts"
+  "/etc/opt/brave/native-messaging-hosts"
+  "/etc/vivaldi/native-messaging-hosts"
+  "/etc/opt/microsoft-edge/native-messaging-hosts"
+)
+
 REMOVED_COUNT=0
 
-for browser_name in "${!BROWSERS[@]}"; do
-  base_dir="${BROWSERS[${browser_name}]}"
-  manifest_path="${base_dir}/NativeMessagingHosts/${NMH_MANIFEST_NAME}"
-  
+for dir in "${GLOBAL_NMH_DIRS[@]}"; do
+  manifest_path="${dir}/${NMH_MANIFEST_NAME}"
+
   if [[ -f "${manifest_path}" ]]; then
     rm -f "${manifest_path}"
-    echo "  ✓ Removed manifest for ${browser_name}"
+    echo "  ✓ Removed manifest from ${dir}"
     REMOVED_COUNT=$((REMOVED_COUNT + 1))
   fi
 done

@@ -11,19 +11,19 @@ use tokio::net::UnixStream;
 mod theme {
     use std::io::IsTerminal;
 
-    const BOLD_PINK: &str = "\x1b[1;38;5;213m";
+    const BOLD_AMBER: &str = "\x1b[1;38;5;208m";
+    const WARN_AMBER: &str = "\x1b[38;5;214m";
+    const ALERT_RED: &str = "\x1b[38;5;202m";
     const DIM: &str = "\x1b[2m";
     const GREEN: &str = "\x1b[32m";
-    const RED: &str = "\x1b[31m";
-    const YELLOW: &str = "\x1b[33m";
     const RESET: &str = "\x1b[0m";
 
     fn color_enabled() -> bool {
         std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal()
     }
 
-    pub fn bold_pink(s: &str) -> String {
-        if color_enabled() { format!("{BOLD_PINK}{s}{RESET}") } else { s.to_string() }
+    pub fn bold_amber(s: &str) -> String {
+        if color_enabled() { format!("{BOLD_AMBER}{s}{RESET}") } else { s.to_string() }
     }
     pub fn dim(s: &str) -> String {
         if color_enabled() { format!("{DIM}{s}{RESET}") } else { s.to_string() }
@@ -32,10 +32,10 @@ mod theme {
         if color_enabled() { format!("{GREEN}✓ {s}{RESET}") } else { format!("✓ {s}") }
     }
     pub fn warn(s: &str) -> String {
-        if color_enabled() { format!("{YELLOW}⚠ {s}{RESET}") } else { format!("⚠ {s}") }
+        if color_enabled() { format!("{WARN_AMBER}⚠ {s}{RESET}") } else { format!("⚠ {s}") }
     }
     pub fn err(s: &str) -> String {
-        if color_enabled() { format!("{RED}✗ {s}{RESET}") } else { format!("✗ {s}") }
+        if color_enabled() { format!("{ALERT_RED}✗ {s}{RESET}") } else { format!("✗ {s}") }
     }
 }
 
@@ -83,12 +83,11 @@ async fn main() -> Result<()> {
             run_uninstall().await?;
         }
         Commands::Start => {
-            // Start is always allowed (if daemon is dead, it can't be locked anyway)
             run_systemctl_command("start", "mindgated.service").await?;
         }
         Commands::Stop => {
             enforce_lock_check().await?;
-            let _ = send_shutdown_request().await; // Graceful shutdown
+            let _ = send_shutdown_request().await;
             run_systemctl_command("stop", "mindgated.service").await?;
         }
         Commands::Restart => {
@@ -104,13 +103,11 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Pre-flight check: asks the daemon if it is currently locked.
-/// If locked and not expired, rejects the operation cleanly.
 async fn enforce_lock_check() -> Result<()> {
     let path = socket_path();
     let mut stream = match UnixStream::connect(&path).await {
         Ok(s) => s,
-        Err(_) => return Ok(()), // Daemon not running, so nothing is locked
+        Err(_) => return Ok(()),
     };
 
     let payload = wire::encode(&Request::Status)?;
@@ -137,7 +134,7 @@ async fn enforce_lock_check() -> Result<()> {
                 let is_expired = if let Some(unlock_at) = lock.unlock_at {
                     unlock_at <= now_ms
                 } else {
-                    false // "forever" lock never expires
+                    false
                 };
 
                 if !is_expired {
@@ -173,7 +170,7 @@ async fn send_shutdown_request() -> Result<()> {
     let path = socket_path();
     let mut stream = match UnixStream::connect(&path).await {
         Ok(s) => s,
-        Err(_) => return Ok(()), // Daemon not running, nothing to shut down gracefully
+        Err(_) => return Ok(()),
     };
     let payload = wire::encode(&Request::Shutdown)?;
     let _ = stream.write_all(&payload).await;
@@ -198,11 +195,10 @@ async fn run_status() -> Result<()> {
     let response: Response = wire::decode(&body)?;
     match response {
         Response::Status(status) => {
-            println!("{}", theme::bold_pink("--- MindGate Status ---"));
+            println!("{}", theme::bold_amber("--- MindGate Status ---"));
             println!("Daemon Running:      {}", if status.daemon_running { theme::ok("YES") } else { theme::err("NO") });
             println!("Extension Connected: {}", if status.extension_connected { theme::ok("YES") } else { theme::err("NO") });
-            
-            // NEW: Display Lock Status beautifully
+
             if let Some(lock) = status.lock_state {
                 if lock.locked {
                     let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
@@ -240,9 +236,8 @@ async fn run_status() -> Result<()> {
 }
 
 async fn run_doctor() -> Result<()> {
-    println!("{}", theme::bold_pink("--- MindGate Doctor ---"));
+    println!("{}", theme::bold_amber("--- MindGate Doctor ---"));
 
-    // 1. Daemon running
     let daemon_running = check_systemctl_active("mindgated.service").await;
     if daemon_running {
         println!("{}", theme::ok("Daemon running"));
@@ -250,7 +245,6 @@ async fn run_doctor() -> Result<()> {
         println!("{}", theme::err("Daemon not running"));
     }
 
-    // 2. Watchdog running
     let watchdog_running = check_systemctl_active("mindgate-watchdog.service").await;
     if watchdog_running {
         println!("{}", theme::ok("Watchdog running"));
@@ -258,7 +252,6 @@ async fn run_doctor() -> Result<()> {
         println!("{}", theme::warn("Watchdog not running"));
     }
 
-    // 3. Native Messaging installed
     let nm_installed = check_native_messaging().await;
     if nm_installed {
         println!("{}", theme::ok("Native Messaging installed"));
@@ -266,7 +259,6 @@ async fn run_doctor() -> Result<()> {
         println!("{}", theme::warn("Native Messaging not installed"));
     }
 
-    // 4, 5, 6. Extension connected & Heartbeat healthy (from daemon)
     let path = socket_path();
     if let Ok(mut stream) = UnixStream::connect(&path).await {
         let payload = wire::encode(&Request::Status).unwrap();
@@ -296,7 +288,6 @@ async fn run_doctor() -> Result<()> {
         println!("{}", theme::warn("Extension connected: NO (Daemon unreachable)"));
     }
 
-    // 7. Browser detected
     let browsers = ["google-chrome", "chromium", "chromium-browser", "brave-browser", "microsoft-edge", "vivaldi", "opera"];
     let mut found_browser = false;
     for browser in browsers {
@@ -311,7 +302,6 @@ async fn run_doctor() -> Result<()> {
         println!("{}", theme::warn("No supported Chromium browser detected"));
     }
 
-    // 8. Manual reminders (as per MVP1 spec)
     println!("{}", theme::warn("Reminder: Ensure 'Allow in Incognito' is enabled in chrome://extensions"));
     println!("{}", theme::warn("Reminder: Load extension in all browser profiles you wish to protect"));
 
@@ -377,7 +367,7 @@ async fn run_logs() -> Result<()> {
         .args(["-u", "mindgated.service", "-f"])
         .status()
         .context("failed to execute journalctl")?;
-    
+
     if !status.success() {
         anyhow::bail!("Failed to read logs. You may need to run this command with sudo.");
     }
@@ -401,7 +391,7 @@ async fn run_native_bridge() -> Result<()> {
         let mut len_buf = [0u8; 4];
         loop {
             if stdin.read_exact(&mut len_buf).await.is_err() {
-                break; // EOF or broken stdin
+                break;
             }
             let len = u32::from_ne_bytes(len_buf) as usize;
             let mut body = vec![0u8; len];
@@ -409,7 +399,6 @@ async fn run_native_bridge() -> Result<()> {
                 break;
             }
 
-            // Parse request from browser, then convert to daemon's Big-Endian wire frame
             if let Ok(request) = serde_json::from_slice::<Request>(&body) {
                 if let Ok(wire_payload) = wire::encode(&request) {
                     if tx.write_all(&wire_payload).await.is_err() {
@@ -425,7 +414,7 @@ async fn run_native_bridge() -> Result<()> {
         let mut len_buf = [0u8; 4];
         loop {
             if rx.read_exact(&mut len_buf).await.is_err() {
-                break; // Socket closed by daemon
+                break;
             }
             let len = u32::from_be_bytes(len_buf) as usize;
             let mut body = vec![0u8; len];
@@ -433,7 +422,6 @@ async fn run_native_bridge() -> Result<()> {
                 break;
             }
 
-            // Convert to browser's native-endian length prefix and pipe to stdout
             let native_len = (body.len() as u32).to_ne_bytes();
             if stdout.write_all(&native_len).await.is_err() {
                 break;

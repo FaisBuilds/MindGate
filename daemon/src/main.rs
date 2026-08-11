@@ -3,7 +3,7 @@ mod self_watch;
 mod server;
 
 use anyhow::Result;
-use mindgate_common::LockState; // NEW: Import LockState from common
+use mindgate_common::LockState;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -27,8 +27,8 @@ pub struct AppState {
     /// Prevents the guardian from killing browsers while the daemon is
     /// intentionally shutting down.
     pub shutting_down: AtomicBool,
-    
-    /// NEW: Tracks the current lock state reported by the extension.
+
+    /// Tracks the current lock state reported by the extension.
     pub lock_state: Mutex<Option<LockState>>,
 }
 
@@ -78,11 +78,17 @@ async fn main() -> Result<()> {
         last_heartbeat: Mutex::new(None),
         started_at: Instant::now(),
         shutting_down: AtomicBool::new(false),
-        lock_state: Mutex::new(None), // NEW: Initialize lock_state
+        lock_state: Mutex::new(None),
     });
 
+    // system-lock-resume adapter. Fails safe to "unlocked" on its own
+    // (see adapters/system-lock-resume) — a problem in this adapter
+    // degrades guardian back to its pre-adapter behavior, never to a
+    // new failure mode.
+    let lock_watcher = system_lock_resume::spawn().await;
+
     // Spawn background protection and health tasks
-    guardian::spawn(state.clone());
+    guardian::spawn(state.clone(), lock_watcher);
     self_watch::spawn();
 
     // Run the Unix Domain Socket server and wait for shutdown
@@ -98,11 +104,11 @@ async fn main() -> Result<()> {
         _ = shutdown_future => {
             info!("MindGate daemon shutting down...");
             state.shutting_down.store(true, Ordering::Release);
-            
-            // Give guardian a brief moment to observe the shutting_down flag 
+
+            // Give guardian a brief moment to observe the shutting_down flag
             // before the process actually exits, preventing accidental browser kills.
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            
+
             info!("Shutdown complete.");
         }
     }
