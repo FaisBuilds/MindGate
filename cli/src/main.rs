@@ -157,7 +157,7 @@ async fn run_systemctl_command(action: &str, unit: &str) -> Result<()> {
 
     if !status.success() {
         anyhow::bail!(
-            "systemctl {} {} failed. You may need to run this command with sudo.",
+            "systemctl {} {} failed. You may need to run with sudo or check with: mindgate doctor",
             action,
             unit
         );

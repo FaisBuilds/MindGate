@@ -260,7 +260,10 @@ echo
 # making them navigate there themselves. Can't be forced further than
 # this — Chrome deliberately blocks any installer from flipping
 # Developer Mode or clicking Load Unpacked on the user's behalf, for
-# security reasons outside this script's control. Silently does
-# nothing if no browser/xdg-open is available (e.g. a headless
-# server), which is fine, the printed instructions above still stand.
-sudo -u "${REAL_USER}" xdg-open "chrome://extensions" >/dev/null 2>&1 || true
+# security reasons outside this script's control. If this fails, the
+# instructions printed above are sufficient.
+if command -v xdg-open >/dev/null 2>&1; then
+  sudo -u "${REAL_USER}" xdg-open "chrome://extensions" >/dev/null 2>&1 || true
+else
+  echo "Note: xdg-open not found — please open chrome://extensions manually."
+fi

@@ -79,12 +79,13 @@ async fn close_supported_browsers(state: &AppState) {
     }
 
     // CRITICAL FIX: Set heartbeat to CURRENT TIME
-    // This gives the user a FULL HEARTBEAT_TIMEOUT (150s) to:
+    // This gives the user a FULL HEARTBEAT_TIMEOUT to:
     // 1. Reopen Chrome
     // 2. Re-enable the extension
     // 3. Let the extension send its first heartbeat
+    // The timeout value is defined in server.rs and must stay in sync.
     *state.last_heartbeat.lock().await = Some(Instant::now());
-    tracing::info!("guardian: reset heartbeat timer - user has 150s to reconnect");
+    tracing::info!("guardian: reset heartbeat timer - user has {:?} to reconnect", HEARTBEAT_TIMEOUT);
 }
 
 /// Spawns the background task. Call once from `main.rs`.
