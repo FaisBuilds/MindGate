@@ -15,7 +15,7 @@
 //!
 //! # Reliability design
 //!
-//! Two things make this hold up over long uptimes, not just at first
+//! Three principles make this hold up over long uptimes, not just at first
 //! connection:
 //!
 //! * **Signals are the fast path, not the only path.** In addition to
@@ -28,10 +28,19 @@
 //!   from suspend, which would otherwise strand a pure signal-listener
 //!   reporting "suspended" forever. The reconciliation pass makes that
 //!   self-healing within one tick.
-//! * **Every failure mode fails to `false` (unlocked).** A D-Bus
-//!   connection error, a timeout, or running on a platform without
-//!   `logind` all result in [`LockWatcher::is_locked`] reporting `false`,
-//!   never a stale `true`.
+//! * **Smart fail-safe on first connection only.** On first startup before
+//!   we've ever successfully connected to D-Bus, connection failures safely
+//!   report `false` (unlocked) to avoid false positives. However, on
+//!   reconnections after we've already established the lock state, we keep
+//!   the last-known state and try to reverify it — this prevents the XFCE
+//!   light-locker freeze bug where D-Bus drops while the session is locked
+//!   and the browser is frozen, which would otherwise be misreported as
+//!   "unlocked" and cause an incorrect browser kill.
+//! * **One-directional reconciliation for LockedHint.** XFCE's light-locker
+//!   is known to be unreliable about keeping the `LockedHint` property in
+//!   sync, so it's only used to *set* the lock (false → true, catching a
+//!   missed signal), never to *clear* it. Only a genuine `Unlock` signal
+//!   clears the lock state.
 //!
 //! # Usage
 //!
