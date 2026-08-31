@@ -214,23 +214,39 @@ async fn resolve_session<'c>(
             );
 
             let sessions = manager.list_sessions().await?;
-            sessions
-                .into_iter()
-                .find(|(_, _, _, seat_id, _)| !seat_id.is_empty())
-                .map(|(session_id, _, _, seat_id, path)| {
-                    tracing::debug!(
+            let mut active_session = None;
+
+            for (session_id, _, _, seat_id, path) in sessions {
+                if seat_id.is_empty() {
+                    continue;
+                }
+
+                let candidate = SessionProxy::new(connection, path.clone()).await?;
+                match candidate.active().await {
+                    Ok(true) => {
+                        tracing::debug!(
+                            session_id,
+                            seat_id,
+                            session = %path,
+                            "system-lock-resume: resolved active session via ListSessions fallback"
+                        );
+                        active_session = Some(path);
+                        break;
+                    }
+                    Ok(false) => {}
+                    Err(error) => tracing::warn!(
+                        error = %error,
                         session_id,
-                        seat_id,
-                        session = %path,
-                        "system-lock-resume: resolved session via ListSessions fallback"
-                    );
-                    path
-                })
-                .ok_or_else(|| {
-                    zbus::Error::Failure(
-                        "system-lock-resume: no seated logind session found".to_string(),
-                    )
-                })?
+                        "system-lock-resume: failed to read candidate session Active property"
+                    ),
+                }
+            }
+
+            active_session.ok_or_else(|| {
+                zbus::Error::Failure(
+                    "system-lock-resume: no active seated logind session found".to_string(),
+                )
+            })?
         }
     };
 

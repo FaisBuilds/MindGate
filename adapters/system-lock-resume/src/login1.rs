@@ -76,6 +76,10 @@ pub(crate) trait Session {
     #[zbus(property)]
     fn locked_hint(&self) -> zbus::Result<bool>;
 
+    /// Whether this is the currently active logind session on its seat.
+    #[zbus(property)]
+    fn active(&self) -> zbus::Result<bool>;
+
     /// The session's own ID (e.g. `"3"`), used only for the diagnostic
     /// startup log in `resolve_session` so the resolved session can be
     /// hand-verified against `loginctl session-status <id>`.

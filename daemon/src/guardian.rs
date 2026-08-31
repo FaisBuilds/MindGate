@@ -43,6 +43,10 @@ const CHECK_INTERVAL: Duration = Duration::from_secs(10);
 /// connect yet."
 const STARTUP_GRACE: Duration = Duration::from_secs(90);
 
+/// Grace period after a session unlocks or the system resumes. Chromium may
+/// need time to thaw its service worker and deliver the first heartbeat.
+const RESUME_GRACE: Duration = HEARTBEAT_TIMEOUT;
+
 /// How many consecutive "never received a heartbeat at all" checks to
 /// tolerate after STARTUP_GRACE ends before actually killing. 2 means:
 /// the first post-grace tick that still sees `None` just warns and
@@ -99,6 +103,8 @@ pub fn spawn(state: Arc<AppState>, lock_watcher: LockWatcher) {
         // becomes Some), so this only ever matters during the initial
         // boot-race window, never again afterward in the same run.
         let mut never_connected_misses: u32 = 0;
+        let mut was_session_protected = lock_watcher.is_locked();
+        let mut resume_grace_until: Option<Instant> = None;
 
         loop {
             interval.tick().await;
@@ -106,6 +112,29 @@ pub fn spawn(state: Arc<AppState>, lock_watcher: LockWatcher) {
             if state.started_at.elapsed() < STARTUP_GRACE {
                 continue;
             }
+
+            let session_protected = lock_watcher.is_locked();
+            if was_session_protected && !session_protected {
+                resume_grace_until = Some(Instant::now() + RESUME_GRACE);
+                tracing::info!(
+                    "guardian: session resumed or unlocked — allowing extension {:?} to reconnect",
+                    RESUME_GRACE
+                );
+            }
+            was_session_protected = session_protected;
+
+            if session_protected {
+                let last_heartbeat = *state.last_heartbeat.lock().await;
+                if last_heartbeat.is_none() {
+                    never_connected_misses = 0;
+                }
+                continue;
+            }
+
+            if resume_grace_until.is_some_and(|deadline| Instant::now() < deadline) {
+                continue;
+            }
+            resume_grace_until = None;
 
             let last_heartbeat = *state.last_heartbeat.lock().await;
 
@@ -120,13 +149,6 @@ pub fn spawn(state: Arc<AppState>, lock_watcher: LockWatcher) {
                     never_connected_misses = 0;
 
                     if t.elapsed() >= HEARTBEAT_TIMEOUT {
-                        if lock_watcher.is_locked() {
-                            tracing::info!(
-                                "guardian: heartbeat stale but session is locked — not closing browsers"
-                            );
-                            continue;
-                        }
-
                         tracing::warn!(
                             "guardian: no heartbeat from extension in over {:?} — extension is \
                              missing, disabled, or crashed. Closing supported browsers.",
@@ -141,13 +163,6 @@ pub fn spawn(state: Arc<AppState>, lock_watcher: LockWatcher) {
                     // boot-race window described above. Give it
                     // NEVER_CONNECTED_TOLERANCE consecutive ticks before
                     // treating it as the former.
-                    if lock_watcher.is_locked() {
-                        tracing::info!(
-                            "guardian: no heartbeat yet but session is locked — not closing browsers"
-                        );
-                        continue;
-                    }
-
                     never_connected_misses += 1;
 
                     if never_connected_misses < NEVER_CONNECTED_TOLERANCE {
