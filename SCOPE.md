@@ -157,3 +157,11 @@ Mindgate has no accounts.
 Main post: video attached directly, no link in body. First reply: link.
 Second reply (optional, strong per own notes): the light-locker
 LockedHint D-Bus bug story as a build-in-public credibility post.
+
+
+### Demo GIF/video
+Short (10-20s) screen recording showing the actual lock surviving a
+browser-kill attempt. Placement: hero or immediately after "Why
+Mindgate" section. Format: muted looping video, not a large raw GIF, for
+page performance.
+
