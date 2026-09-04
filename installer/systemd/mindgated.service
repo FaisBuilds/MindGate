@@ -1,6 +1,7 @@
 [Unit]
 Description=MindGate enforcement daemon
-After=network.target
+Wants=systemd-logind.service
+After=network.target dbus.service systemd-logind.service
 
 [Service]
 Type=simple
