@@ -20,7 +20,7 @@ const RECONCILE_INTERVAL: Duration = Duration::from_secs(12);
 const RECONNECT_BACKOFF: Duration = Duration::from_secs(15);
 
 /// Runs forever: connect, watch, and on any failure, retry after a backoff.
-/// 
+///
 /// CRITICAL FIX for XFCE light-locker freezing bug:
 /// Only fail-safe to "unlocked" on FIRST connection failure (before we've ever
 /// successfully connected). On reconnections after we've already been watching,
@@ -30,13 +30,11 @@ const RECONNECT_BACKOFF: Duration = Duration::from_secs(15);
 /// - reset_to_unlocked() is called (too aggressive!)
 /// - Daemon thinks session is unlocked and kills frozen browser
 /// - User returns to find browser killed
-/// 
+///
 /// By holding state on reconnect, we avoid false "unlocked" reports while
 /// the session is genuinely locked. The reconciliation pass will reverify
 /// the current state once reconnected.
 pub(crate) async fn run(state: Arc<SharedState>) {
-    let mut first_connection = true;
-
     loop {
         if let Err(error) = watch_once(&state).await {
             tracing::warn!(
@@ -45,13 +43,13 @@ pub(crate) async fn run(state: Arc<SharedState>) {
             );
         }
 
-        // Only fail-safe to unlocked on FIRST startup (before we've ever
-        // successfully connected). On reconnects after we've already been
-        // watching, keep the last-known state and try to reverify it.
-        if first_connection {
+        // Before the first complete reconciliation, use the boolean fallback.
+        // After that, preserve the last-known bits but mark them unknown
+        // until a reconnect verifies them again.
+        if !state.is_known() {
             state.reset_to_unlocked("first connection attempt failed");
-            first_connection = false;
         } else {
+            state.mark_unknown();
             tracing::info!(
                 "system-lock-resume: D-Bus connection lost but keeping previous state \
                  until we can reverify it (prevented aggressive fail-safe during lock)"
@@ -92,7 +90,9 @@ async fn watch_once(state: &Arc<SharedState>) -> zbus::Result<()> {
     reconcile_ticker.reset_after(RECONCILE_INTERVAL);
     reconcile_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-    reconcile(&manager, &session, state).await;
+    if reconcile(&manager, &session, state).await {
+        state.mark_known();
+    }
 
     loop {
         tokio::select! {
@@ -110,7 +110,9 @@ async fn watch_once(state: &Arc<SharedState>) -> zbus::Result<()> {
                 state.set_session_locked(false, "Unlock signal");
             }
             _ = reconcile_ticker.tick() => {
-                reconcile(&manager, &session, state).await;
+                if reconcile(&manager, &session, state).await {
+                    state.mark_known();
+                }
             }
         }
     }
@@ -146,13 +148,19 @@ async fn watch_once(state: &Arc<SharedState>) -> zbus::Result<()> {
 /// half of the state, and the failure is logged rather than aborting the
 /// whole reconciliation pass. A hard connection failure will still surface
 /// on the next signal-stream poll or method call in the main select loop.
-async fn reconcile(manager: &ManagerProxy<'_>, session: &SessionProxy<'_>, state: &SharedState) {
+async fn reconcile(
+    manager: &ManagerProxy<'_>,
+    session: &SessionProxy<'_>,
+    state: &SharedState,
+) -> bool {
+    let mut complete = true;
+
     match manager.preparing_for_sleep().await {
         Ok(suspended) => state.set_system_suspended(suspended, "reconciliation"),
-        Err(error) => tracing::warn!(
-            error = %error,
-            "system-lock-resume: reconciliation failed to read PreparingForSleep"
-        ),
+        Err(error) => {
+            complete = false;
+            tracing::warn!(error = %error, "system-lock-resume: reconciliation failed to read PreparingForSleep");
+        }
     }
 
     match session.locked_hint().await {
@@ -177,11 +185,13 @@ async fn reconcile(manager: &ManagerProxy<'_>, session: &SessionProxy<'_>, state
                 );
             }
         }
-        Err(error) => tracing::warn!(
-            error = %error,
-            "system-lock-resume: reconciliation failed to read LockedHint"
-        ),
+        Err(error) => {
+            complete = false;
+            tracing::warn!(error = %error, "system-lock-resume: reconciliation failed to read LockedHint");
+        }
     }
+
+    complete
 }
 
 /// Resolves the logind session object path for this process, preferring

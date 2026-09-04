@@ -32,9 +32,7 @@ pub(crate) trait Manager {
     /// running inside any session's cgroup). Tuple fields, per the
     /// `org.freedesktop.login1.Manager.ListSessions` signature, are
     /// `(session_id, user_id, user_name, seat_id, object_path)`.
-    fn list_sessions(
-        &self,
-    ) -> zbus::Result<Vec<(String, u32, String, String, OwnedObjectPath)>>;
+    fn list_sessions(&self) -> zbus::Result<Vec<(String, u32, String, String, OwnedObjectPath)>>;
 
     /// Fired both when a suspend/hibernate is about to happen (`start ==
     /// true`) and again once it completes (`start == false`) — see the

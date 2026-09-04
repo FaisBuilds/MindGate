@@ -23,24 +23,48 @@ mod theme {
     }
 
     pub fn bold_amber(s: &str) -> String {
-        if color_enabled() { format!("{BOLD_AMBER}{s}{RESET}") } else { s.to_string() }
+        if color_enabled() {
+            format!("{BOLD_AMBER}{s}{RESET}")
+        } else {
+            s.to_string()
+        }
     }
     pub fn dim(s: &str) -> String {
-        if color_enabled() { format!("{DIM}{s}{RESET}") } else { s.to_string() }
+        if color_enabled() {
+            format!("{DIM}{s}{RESET}")
+        } else {
+            s.to_string()
+        }
     }
     pub fn ok(s: &str) -> String {
-        if color_enabled() { format!("{GREEN}✓ {s}{RESET}") } else { format!("✓ {s}") }
+        if color_enabled() {
+            format!("{GREEN}✓ {s}{RESET}")
+        } else {
+            format!("✓ {s}")
+        }
     }
     pub fn warn(s: &str) -> String {
-        if color_enabled() { format!("{WARN_AMBER}⚠ {s}{RESET}") } else { format!("⚠ {s}") }
+        if color_enabled() {
+            format!("{WARN_AMBER}⚠ {s}{RESET}")
+        } else {
+            format!("⚠ {s}")
+        }
     }
     pub fn err(s: &str) -> String {
-        if color_enabled() { format!("{ALERT_RED}✗ {s}{RESET}") } else { format!("✗ {s}") }
+        if color_enabled() {
+            format!("{ALERT_RED}✗ {s}{RESET}")
+        } else {
+            format!("✗ {s}")
+        }
     }
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "mindgate", about = "Stubborn browser protector for Linux", version)]
+#[command(
+    name = "mindgate",
+    about = "Stubborn browser protector for Linux",
+    version
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -162,7 +186,10 @@ async fn run_systemctl_command(action: &str, unit: &str) -> Result<()> {
             unit
         );
     }
-    println!("{}", theme::ok(&format!("MindGate {} successfully.", action)));
+    println!(
+        "{}",
+        theme::ok(&format!("MindGate {} successfully.", action))
+    );
     Ok(())
 }
 
@@ -179,9 +206,12 @@ async fn send_shutdown_request() -> Result<()> {
 
 async fn run_status() -> Result<()> {
     let path = socket_path();
-    let mut stream = UnixStream::connect(&path)
-        .await
-        .with_context(|| format!("Could not connect to daemon at {}. Is it running?", path.display()))?;
+    let mut stream = UnixStream::connect(&path).await.with_context(|| {
+        format!(
+            "Could not connect to daemon at {}. Is it running?",
+            path.display()
+        )
+    })?;
 
     let payload = wire::encode(&Request::Status)?;
     stream.write_all(&payload).await?;
@@ -196,12 +226,29 @@ async fn run_status() -> Result<()> {
     match response {
         Response::Status(status) => {
             println!("{}", theme::bold_amber("--- MindGate Status ---"));
-            println!("Daemon Running:      {}", if status.daemon_running { theme::ok("YES") } else { theme::err("NO") });
-            println!("Extension Connected: {}", if status.extension_connected { theme::ok("YES") } else { theme::err("NO") });
+            println!(
+                "Daemon Running:      {}",
+                if status.daemon_running {
+                    theme::ok("YES")
+                } else {
+                    theme::err("NO")
+                }
+            );
+            println!(
+                "Extension Connected: {}",
+                if status.extension_connected {
+                    theme::ok("YES")
+                } else {
+                    theme::err("NO")
+                }
+            );
 
             if let Some(lock) = status.lock_state {
                 if lock.locked {
-                    let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+                    let now_ms = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis() as u64;
                     let is_expired = if let Some(unlock_at) = lock.unlock_at {
                         unlock_at <= now_ms
                     } else {
@@ -215,7 +262,13 @@ async fn run_status() -> Result<()> {
                             let hours = remaining_secs / 3600;
                             let minutes = (remaining_secs % 3600) / 60;
                             let seconds = remaining_secs % 60;
-                            println!("Lock Status:         {} {}h {}m {}s remaining", theme::err("LOCKED"), hours, minutes, seconds);
+                            println!(
+                                "Lock Status:         {} {}h {}m {}s remaining",
+                                theme::err("LOCKED"),
+                                hours,
+                                minutes,
+                                seconds
+                            );
                         } else {
                             println!("Lock Status:         {} FOREVER", theme::err("LOCKED"));
                         }
@@ -273,10 +326,16 @@ async fn run_doctor() -> Result<()> {
                         println!("{}", theme::ok("Extension connected"));
                         println!("{}", theme::ok("Heartbeat healthy"));
                     } else {
-                        println!("{}", theme::warn("Extension connected: NO (Heartbeat missing)"));
+                        println!(
+                            "{}",
+                            theme::warn("Extension connected: NO (Heartbeat missing)")
+                        );
                     }
                 } else {
-                    println!("{}", theme::warn("Extension connected: NO (Invalid response)"));
+                    println!(
+                        "{}",
+                        theme::warn("Extension connected: NO (Invalid response)")
+                    );
                 }
             } else {
                 println!("{}", theme::warn("Extension connected: NO (Read error)"));
@@ -285,13 +344,28 @@ async fn run_doctor() -> Result<()> {
             println!("{}", theme::warn("Extension connected: NO (Read error)"));
         }
     } else {
-        println!("{}", theme::warn("Extension connected: NO (Daemon unreachable)"));
+        println!(
+            "{}",
+            theme::warn("Extension connected: NO (Daemon unreachable)")
+        );
     }
 
-    let browsers = ["google-chrome", "chromium", "chromium-browser", "brave-browser", "microsoft-edge", "vivaldi", "opera"];
+    let browsers = [
+        "google-chrome",
+        "chromium",
+        "chromium-browser",
+        "brave-browser",
+        "microsoft-edge",
+        "vivaldi",
+        "opera",
+    ];
     let mut found_browser = false;
     for browser in browsers {
-        if Command::new("which").arg(browser).output().is_ok_and(|o| o.status.success()) {
+        if Command::new("which")
+            .arg(browser)
+            .output()
+            .is_ok_and(|o| o.status.success())
+        {
             found_browser = true;
             break;
         }
@@ -302,10 +376,19 @@ async fn run_doctor() -> Result<()> {
         println!("{}", theme::warn("No supported Chromium browser detected"));
     }
 
-    println!("{}", theme::warn("Reminder: Ensure 'Allow in Incognito' is enabled in chrome://extensions"));
-    println!("{}", theme::warn("Reminder: Load extension in all browser profiles you wish to protect"));
+    println!(
+        "{}",
+        theme::warn("Reminder: Ensure 'Allow in Incognito' is enabled in chrome://extensions")
+    );
+    println!(
+        "{}",
+        theme::warn("Reminder: Load extension in all browser profiles you wish to protect")
+    );
 
-    println!("\n{}", theme::dim("Run `mindgate status` for more details."));
+    println!(
+        "\n{}",
+        theme::dim("Run `mindgate status` for more details.")
+    );
     Ok(())
 }
 
@@ -328,7 +411,8 @@ async fn check_native_messaging() -> bool {
         }
     }
     if let Some(home) = std::env::var_os("HOME") {
-        let user_path = std::path::Path::new(&home).join(".config/google-chrome/NativeMessagingHosts/com.mindgate.protector.json");
+        let user_path = std::path::Path::new(&home)
+            .join(".config/google-chrome/NativeMessagingHosts/com.mindgate.protector.json");
         if user_path.exists() {
             return true;
         }
@@ -337,15 +421,26 @@ async fn check_native_messaging() -> bool {
 }
 
 async fn run_install() -> Result<()> {
-    println!("{}", theme::dim("MindGate is typically installed via: curl -fsSL https://... | bash"));
-    println!("{}", theme::dim("If you are running from a source checkout, run: sudo ./installer/install.sh"));
+    println!(
+        "{}",
+        theme::dim("MindGate is typically installed via: curl -fsSL https://... | bash")
+    );
+    println!(
+        "{}",
+        theme::dim("If you are running from a source checkout, run: sudo ./installer/install.sh")
+    );
     Ok(())
 }
 
 async fn run_uninstall() -> Result<()> {
-    println!("{}", theme::warn("This will remove MindGate completely. Continue? [y/N]"));
+    println!(
+        "{}",
+        theme::warn("This will remove MindGate completely. Continue? [y/N]")
+    );
     let mut input = String::new();
-    std::io::stdin().read_line(&mut input).context("failed to read input")?;
+    std::io::stdin()
+        .read_line(&mut input)
+        .context("failed to read input")?;
     if !input.trim().eq_ignore_ascii_case("y") && !input.trim().eq_ignore_ascii_case("yes") {
         println!("Cancelled.");
         return Ok(());
@@ -357,7 +452,9 @@ async fn run_uninstall() -> Result<()> {
         .context("failed to execute uninstall script")?;
 
     if !status.success() {
-        anyhow::bail!("Uninstall failed. You may need to run `sudo ./installer/uninstall.sh` manually.");
+        anyhow::bail!(
+            "Uninstall failed. You may need to run `sudo ./installer/uninstall.sh` manually."
+        );
     }
     Ok(())
 }
@@ -379,9 +476,12 @@ async fn run_logs() -> Result<()> {
 /// and the daemon's big-endian wire protocol.
 async fn run_native_bridge() -> Result<()> {
     let path = socket_path();
-    let socket = UnixStream::connect(&path)
-        .await
-        .with_context(|| format!("Bridge mode failed to connect to daemon socket at {}", path.display()))?;
+    let socket = UnixStream::connect(&path).await.with_context(|| {
+        format!(
+            "Bridge mode failed to connect to daemon socket at {}",
+            path.display()
+        )
+    })?;
 
     let mut stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();

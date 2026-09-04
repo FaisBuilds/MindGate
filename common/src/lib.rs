@@ -18,7 +18,7 @@ pub struct LockState {
 }
 
 /// Requests sent to the daemon via the Unix domain socket.
-/// Note: `content = "args"` was removed to allow the browser extension 
+/// Note: `content = "args"` was removed to allow the browser extension
 /// to send a flat JSON object: { "cmd": "ExtensionHeartbeat", "lockState": ... }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "cmd")]
@@ -53,14 +53,9 @@ pub struct StatusInfo {
 pub enum Response {
     Ok,
     Pong,
-    Version {
-        daemon: String,
-        protocol: u16,
-    },
+    Version { daemon: String, protocol: u16 },
     Status(StatusInfo),
-    Error {
-        message: String,
-    },
+    Error { message: String },
 }
 
 /// Returns the path to the Unix domain socket.
@@ -105,7 +100,7 @@ mod tests {
         // Updated to match the new struct variant
         let req = Request::ExtensionHeartbeat { lock_state: None };
         let bytes = wire::encode(&req).unwrap();
-        
+
         // Skip the first 4 bytes (length prefix) for decoding
         let decoded: Request = wire::decode(&bytes[4..]).unwrap();
 

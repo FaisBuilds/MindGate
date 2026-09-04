@@ -35,7 +35,7 @@ use tokio::net::{UnixListener, UnixStream};
 /// alarm periods for installed extensions) plus scheduling jitter,
 /// without being so loose that a genuinely dead extension takes
 /// minutes to show up as gone.
-/// 
+///
 /// CRITICAL: This value MUST match the "150s" mentioned in guardian.rs
 /// comments and close_supported_browsers() — a mismatch causes the
 /// daemon and CLI to disagree about whether the extension is alive.
@@ -76,8 +76,9 @@ fn authorized(stream: &UnixStream) -> bool {
     // `installer/install.sh` and `mindgated.service`), since systemd
     // starts the daemon directly as root with no sudo layer to read
     // `SUDO_UID` from.
-    let owner_uid: Option<u32> =
-        std::env::var("MINDGATE_OWNER_UID").ok().and_then(|s| s.parse().ok());
+    let owner_uid: Option<u32> = std::env::var("MINDGATE_OWNER_UID")
+        .ok()
+        .and_then(|s| s.parse().ok());
 
     match peer_uid(stream) {
         Some(uid) => uid == my_uid || uid == 0 || Some(uid) == sudo_uid || Some(uid) == owner_uid,
@@ -94,13 +95,19 @@ async fn read_frame(stream: &mut UnixStream) -> Result<Option<Vec<u8>>> {
     }
     let len = u32::from_be_bytes(len_buf) as usize;
     let mut body = vec![0u8; len];
-    stream.read_exact(&mut body).await.context("failed to read frame body")?;
+    stream
+        .read_exact(&mut body)
+        .await
+        .context("failed to read frame body")?;
     Ok(Some(body))
 }
 
 async fn write_response(stream: &mut UnixStream, resp: &Response) -> Result<()> {
     let bytes = wire::encode(resp)?;
-    stream.write_all(&bytes).await.context("failed to write response")?;
+    stream
+        .write_all(&bytes)
+        .await
+        .context("failed to write response")?;
     Ok(())
 }
 
@@ -121,8 +128,8 @@ pub async fn run(state: Arc<AppState>) -> Result<()> {
             .with_context(|| format!("failed to remove stale socket {}", path.display()))?;
     }
 
-    let listener = UnixListener::bind(&path)
-        .with_context(|| format!("failed to bind {}", path.display()))?;
+    let listener =
+        UnixListener::bind(&path).with_context(|| format!("failed to bind {}", path.display()))?;
 
     // Permissive file mode is deliberate: real access control happens
     // via SO_PEERCRED in `authorized()` above, which checks the
@@ -152,7 +159,9 @@ async fn handle_connection(mut stream: UnixStream, state: Arc<AppState>) -> Resu
         tracing::warn!("rejected connection: peer UID not authorized");
         let _ = write_response(
             &mut stream,
-            &Response::Error { message: "not authorized".into() },
+            &Response::Error {
+                message: "not authorized".into(),
+            },
         )
         .await;
         return Ok(());
@@ -164,7 +173,9 @@ async fn handle_connection(mut stream: UnixStream, state: Arc<AppState>) -> Resu
             Err(e) => {
                 let _ = write_response(
                     &mut stream,
-                    &Response::Error { message: format!("bad request: {e:#}") },
+                    &Response::Error {
+                        message: format!("bad request: {e:#}"),
+                    },
                 )
                 .await;
                 continue;
@@ -183,7 +194,7 @@ async fn dispatch(req: Request, state: &AppState) -> Response {
 
     match req {
         Request::Status => build_status(state).await,
-        
+
         // UPDATED: Accept and save the lock_state from the extension heartbeat
         Request::ExtensionHeartbeat { lock_state } => {
             *state.last_heartbeat.lock().await = Some(Instant::now());
@@ -192,30 +203,30 @@ async fn dispatch(req: Request, state: &AppState) -> Response {
             }
             Response::Ok
         }
-        
+
         Request::Ping => Response::Pong,
         Request::Version => Response::Version {
             daemon: env!("CARGO_PKG_VERSION").to_string(),
             protocol: 1,
         },
-        
+
         // UPDATED: Intercept Shutdown and reject if locked
         Request::Shutdown => {
             let current_lock = state.lock_state.lock().await.clone();
-            
+
             if let Some(lock) = current_lock {
                 if lock.locked {
                     let now_ms = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .unwrap()
                         .as_millis() as u64;
-                    
+
                     let is_expired = if let Some(unlock_at) = lock.unlock_at {
                         unlock_at <= now_ms
                     } else {
                         false // "forever" lock never expires
                     };
-                    
+
                     if !is_expired {
                         tracing::warn!("Shutdown rejected: MindGate is currently locked");
                         return Response::Error {
@@ -224,7 +235,7 @@ async fn dispatch(req: Request, state: &AppState) -> Response {
                     }
                 }
             }
-            
+
             tracing::info!("Shutdown requested via CLI");
             state.shutting_down.store(true, Ordering::Release);
             Response::Ok
@@ -234,9 +245,10 @@ async fn dispatch(req: Request, state: &AppState) -> Response {
 
 async fn build_status(state: &AppState) -> Response {
     let last_heartbeat = *state.last_heartbeat.lock().await;
-    let extension_connected =
-        last_heartbeat.map(|t| t.elapsed() < HEARTBEAT_TIMEOUT).unwrap_or(false);
-    
+    let extension_connected = last_heartbeat
+        .map(|t| t.elapsed() < HEARTBEAT_TIMEOUT)
+        .unwrap_or(false);
+
     // UPDATED: Fetch and include the current lock state in the status response
     let lock_state = state.lock_state.lock().await.clone();
 

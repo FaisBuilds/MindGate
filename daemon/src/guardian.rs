@@ -31,9 +31,9 @@
 
 use crate::server::HEARTBEAT_TIMEOUT;
 use crate::AppState;
-use system_lock_resume::LockWatcher;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use system_lock_resume::LockWatcher;
 use tokio::process::Command;
 
 const CHECK_INTERVAL: Duration = Duration::from_secs(10);
@@ -89,7 +89,10 @@ async fn close_supported_browsers(state: &AppState) {
     // 3. Let the extension send its first heartbeat
     // The timeout value is defined in server.rs and must stay in sync.
     *state.last_heartbeat.lock().await = Some(Instant::now());
-    tracing::info!("guardian: reset heartbeat timer - user has {:?} to reconnect", HEARTBEAT_TIMEOUT);
+    tracing::info!(
+        "guardian: reset heartbeat timer - user has {:?} to reconnect",
+        HEARTBEAT_TIMEOUT
+    );
 }
 
 /// Spawns the background task. Call once from `main.rs`.
@@ -114,6 +117,12 @@ pub fn spawn(state: Arc<AppState>, lock_watcher: LockWatcher) {
             }
 
             let session_protected = lock_watcher.is_locked();
+            if !lock_watcher.is_known() {
+                tracing::debug!(
+                    "guardian: session lock state is unknown — waiting for logind visibility"
+                );
+                continue;
+            }
             if was_session_protected && !session_protected {
                 resume_grace_until = Some(Instant::now() + RESUME_GRACE);
                 tracing::info!(

@@ -3,17 +3,17 @@
 //! script does for `mindgated.service`.
 //!
 //! Per MVP1 Stubbornness: "Daemon and watchdog monitor each other."
-//! Neither `Restart=always` nor a watching companion can restart itself 
-//! if IT is the one that gets stopped — a deliberate `systemctl stop` 
-//! is honored by systemd, not treated as a crash to recover from. 
-//! Therefore, each of the two units watches the OTHER instead. 
-//! 
-//! This ensures that stopping MindGate requires deliberately taking down 
+//! Neither `Restart=always` nor a watching companion can restart itself
+//! if IT is the one that gets stopped — a deliberate `systemctl stop`
+//! is honored by systemd, not treated as a crash to recover from.
+//! Therefore, each of the two units watches the OTHER instead.
+//!
+//! This ensures that stopping MindGate requires deliberately taking down
 //! both independent units, adding friction to bypass attempts.
 //!
-//! Only runs if `systemctl` is actually available. Silently a no-op 
-//! otherwise (e.g., a non-systemd dev environment, or `cargo run` 
-//! outside the installed service), matching the daemon's overall 
+//! Only runs if `systemctl` is actually available. Silently a no-op
+//! otherwise (e.g., a non-systemd dev environment, or `cargo run`
+//! outside the installed service), matching the daemon's overall
 //! "fail gracefully, not catastrophically" posture.
 
 use std::process::Stdio;
@@ -48,7 +48,7 @@ pub fn spawn() {
 
         loop {
             interval.tick().await;
-            
+
             if !watchdog_unit_active().await {
                 warn!("{WATCHDOG_UNIT} is not active — attempting to restart it");
                 let _ = Command::new("systemctl")

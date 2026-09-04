@@ -28,11 +28,24 @@ const ORDERING: Ordering = Ordering::Relaxed;
 pub(crate) struct SharedState {
     session_locked: AtomicBool,
     system_suspended: AtomicBool,
+    state_known: AtomicBool,
 }
 
 impl SharedState {
     pub(crate) fn is_locked(&self) -> bool {
         self.session_locked.load(ORDERING) || self.system_suspended.load(ORDERING)
+    }
+
+    pub(crate) fn is_known(&self) -> bool {
+        self.state_known.load(ORDERING)
+    }
+
+    pub(crate) fn mark_known(&self) {
+        self.state_known.store(true, ORDERING);
+    }
+
+    pub(crate) fn mark_unknown(&self) {
+        self.state_known.store(false, ORDERING);
     }
 
     /// Sets the session-lock flag, logging only on an actual transition so
@@ -61,10 +74,11 @@ impl SharedState {
         }
     }
 
-    /// Called when the D-Bus connection is lost or never established.
-    /// Per the fail-safe requirement, an adapter that can't observe the
-    /// real state reports "unlocked" rather than holding onto stale data.
+    /// Clears the state used by callers that need a fail-safe boolean. The
+    /// separate visibility bit remains false until a complete reconciliation
+    /// succeeds, so callers do not mistake this fallback for confirmation.
     pub(crate) fn reset_to_unlocked(&self, reason: &'static str) {
+        self.mark_unknown();
         let was_locked = self.session_locked.swap(false, ORDERING);
         let was_suspended = self.system_suspended.swap(false, ORDERING);
         if was_locked || was_suspended {
@@ -72,8 +86,29 @@ impl SharedState {
                 reason,
                 was_locked,
                 was_suspended,
-                "system-lock-resume: lost D-Bus visibility, failing safe to unlocked"
+                "system-lock-resume: lost D-Bus visibility, fallback state is unlocked"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SharedState;
+
+    #[test]
+    fn fallback_is_not_reported_as_confirmed_unlock() {
+        let state = SharedState::default();
+        assert!(!state.is_locked());
+        assert!(!state.is_known());
+
+        state.set_session_locked(true, "test");
+        state.mark_known();
+        assert!(state.is_locked());
+        assert!(state.is_known());
+
+        state.mark_unknown();
+        assert!(state.is_locked());
+        assert!(!state.is_known());
     }
 }

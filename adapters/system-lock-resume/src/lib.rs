@@ -57,7 +57,6 @@ mod login1;
 mod state;
 mod watch;
 
-
 use std::sync::Arc;
 
 use tokio::task::JoinHandle;
@@ -84,12 +83,18 @@ impl LockWatcher {
     /// [`spawn`], rather than making a D-Bus call itself.
     ///
     /// Defaults to `false` before the first successful connection, and
-    /// fails safe to `false` on any D-Bus error — see the crate-level
-    /// docs. Callers that need to distinguish "confirmed unlocked" from
-    /// "we don't currently know" are out of scope for this crate; it only
-    /// promises the fail-safe boolean.
+    /// falls back to `false` on D-Bus errors. Callers that need to
+    /// distinguish "confirmed unlocked" from "unknown" should also check
+    /// [`is_known`](LockWatcher::is_known).
     pub fn is_locked(&self) -> bool {
         self.state.is_locked()
+    }
+
+    /// Whether the watcher has a currently verified view of logind.
+    /// `false` means `is_locked() == false` must not be treated as an
+    /// authoritative unlocked result.
+    pub fn is_known(&self) -> bool {
+        self.state.is_known()
     }
 }
 
